@@ -7,6 +7,7 @@ import { AuthModule } from './auth/auth.module';
 import { UsersModule } from './users/users.module';
 import { CyclesModule } from './cycles/cycles.module';
 import { SymptomsModule } from './symptoms/symptoms.module';
+import { MoodsModule } from './moods/moods.module';
 
 @Module({
   imports: [
@@ -18,6 +19,7 @@ import { SymptomsModule } from './symptoms/symptoms.module';
     UsersModule,
     CyclesModule,
     SymptomsModule,
+    MoodsModule,
   ],
   controllers: [AppController],
   providers: [AppService],
