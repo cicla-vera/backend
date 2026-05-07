@@ -6,20 +6,232 @@ datasource db {
   provider = "postgresql"
 }
 
+// ─── AUTH ────────────────────────────────────────────────────────────────────
+
 model User {
   id        String   @id @default(uuid())
   email     String   @unique
   password  String
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
-  profile   Profile?
+
+  profile              Profile?
+  cycleLogs            CycleLog[]
+  symptomEntries       SymptomEntry[]
+  moodEntries          MoodEntry[]
+  flowEntries          FlowEntry[]
+  notes                Note[]
+  temperatureEntries   TemperatureEntry[]
+  weightEntries        WeightEntry[]
+  waterEntries         WaterEntry[]
+  activityEntries      ActivityEntry[]
+  sleepEntries         SleepEntry[]
+  intercourseEntries   IntercourseEntry[]
+  medicationEntries    MedicationEntry[]
+  notificationSettings NotificationSettings?
 }
 
 model Profile {
-  id        String   @id @default(uuid())
-  userId    String   @unique
+  id        String    @id @default(uuid())
+  userId    String    @unique
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   name      String?
   phone     String?
+  birthDate DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+}
+
+// ─── CYCLE ───────────────────────────────────────────────────────────────────
+
+model CycleLog {
+  id        String    @id @default(uuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  startDate DateTime
+  endDate   DateTime?
+  duration  Int?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+}
+
+// ─── SYMPTOMS ────────────────────────────────────────────────────────────────
+
+model Symptom {
+  id      String         @id @default(uuid())
+  name    String         @unique
+  entries SymptomEntry[]
+}
+
+model SymptomEntry {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  symptomId String
+  symptom   Symptom  @relation(fields: [symptomId], references: [id])
+  date      DateTime
+  intensity Int?
   createdAt DateTime @default(now())
-  user      User     @relation(fields: [userId], references: [id])
+}
+
+// ─── MOOD ────────────────────────────────────────────────────────────────────
+
+enum MoodType {
+  HAPPY
+  SAD
+  ANXIOUS
+  IRRITABLE
+  CALM
+  ENERGETIC
+  TIRED
+  SENSITIVE
+}
+
+model MoodEntry {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  mood      MoodType
+  date      DateTime
+  note      String?
+  createdAt DateTime @default(now())
+}
+
+// ─── FLOW ────────────────────────────────────────────────────────────────────
+
+enum FlowIntensity {
+  SPOTTING
+  LIGHT
+  MEDIUM
+  HEAVY
+  VERY_HEAVY
+}
+
+model FlowEntry {
+  id        String        @id @default(uuid())
+  userId    String
+  user      User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  intensity FlowIntensity
+  date      DateTime
+  createdAt DateTime      @default(now())
+}
+
+// ─── NOTES ───────────────────────────────────────────────────────────────────
+
+model Note {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  content   String
+  date      DateTime
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// ─── HEALTH TRACKING ─────────────────────────────────────────────────────────
+
+model TemperatureEntry {
+  id          String   @id @default(uuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  temperature Float
+  date        DateTime
+  createdAt   DateTime @default(now())
+}
+
+model WeightEntry {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  weight    Float
+  date      DateTime
+  createdAt DateTime @default(now())
+}
+
+model WaterEntry {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  amount    Int
+  date      DateTime
+  createdAt DateTime @default(now())
+}
+
+enum ActivityType {
+  WALKING
+  RUNNING
+  CYCLING
+  SWIMMING
+  YOGA
+  GYM
+  DANCING
+  OTHER
+}
+
+enum ActivityIntensity {
+  LOW
+  MEDIUM
+  HIGH
+}
+
+model ActivityEntry {
+  id          String            @id @default(uuid())
+  userId      String
+  user        User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type        ActivityType
+  intensity   ActivityIntensity
+  duration    Int
+  date        DateTime
+  createdAt   DateTime          @default(now())
+}
+
+enum SleepQuality {
+  POOR
+  FAIR
+  GOOD
+  EXCELLENT
+}
+
+model SleepEntry {
+  id        String       @id @default(uuid())
+  userId    String
+  user      User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  hours     Float
+  quality   SleepQuality
+  date      DateTime
+  createdAt DateTime     @default(now())
+}
+
+model IntercourseEntry {
+  id            String   @id @default(uuid())
+  userId        String
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  protected     Boolean
+  date          DateTime
+  createdAt     DateTime @default(now())
+}
+
+model MedicationEntry {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name      String
+  dose      String?
+  date      DateTime
+  createdAt DateTime @default(now())
+}
+
+// ─── NOTIFICATIONS ───────────────────────────────────────────────────────────
+
+model NotificationSettings {
+  id                    String   @id @default(uuid())
+  userId                String   @unique
+  user                  User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  periodReminder        Boolean  @default(true)
+  ovulationReminder     Boolean  @default(true)
+  medicationReminder    Boolean  @default(false)
+  waterReminder         Boolean  @default(false)
+  reminderHour          Int      @default(8)
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
 }
