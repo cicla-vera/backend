@@ -30,17 +30,31 @@ npm run start:dev
 ```
 
 ## Estrutura de módulos
+
+Estrutura atual:
+
+```text
 src/
-├── auth/         # Autenticação e autorização
-├── users/        # Perfil da usuária
-├── cycles/       # Registro e predição de ciclo menstrual
-├── symptoms/     # Sintomas diários
-├── moods/        # Humor diário
-├── flow/         # Intensidade do fluxo
-├── notes/        # Notas livres
-├── health/       # Temperatura, peso, água, atividade, sono
-├── medications/  # Medicamentos e suplementos
-└── notifications/# Configurações de notificações
+|-- main.ts
+|-- app.module.ts
+|-- app.controller.ts
+|-- app.service.ts
+`-- app.controller.spec.ts
+```
+
+Novos domínios devem ser organizados como módulos próprios dentro de `src/`:
+
+```text
+src/
+`-- <domain>/
+    |-- <domain>.module.ts
+    |-- <domain>.controller.ts
+    |-- <domain>.service.ts
+    |-- dto/
+    `-- entities/
+```
+
+Exemplos de domínios previstos: `auth`, `users`, `cycles`, `symptoms`, `moods`, `flow`, `notes`, `health`, `medications` e `notifications`.
 
 ## Convenções
 
