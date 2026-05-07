@@ -9,6 +9,7 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { CyclesService } from './cycles.service';
+import { CyclesPredictionService } from './cycles.prediction.service';
 import { CreateCycleDto } from './dto/create-cycle.dto';
 import { UpdateCycleDto } from './dto/update-cycle.dto';
 import { JwtGuard } from '../auth/guards/jwt.guard';
@@ -17,7 +18,10 @@ import { CurrentUser } from '../auth/decorators/current-user.decorator';
 @UseGuards(JwtGuard)
 @Controller('cycles')
 export class CyclesController {
-  constructor(private readonly cyclesService: CyclesService) {}
+  constructor(
+    private readonly cyclesService: CyclesService,
+    private readonly predictionService: CyclesPredictionService,
+  ) {}
 
   @Post()
   create(@CurrentUser() user: { sub: string }, @Body() dto: CreateCycleDto) {
@@ -32,6 +36,11 @@ export class CyclesController {
   @Get('history')
   getHistory(@CurrentUser() user: { sub: string }) {
     return this.cyclesService.getHistory(user.sub);
+  }
+
+  @Get('predict')
+  predict(@CurrentUser() user: { sub: string }) {
+    return this.predictionService.predict(user.sub);
   }
 
   @Get(':id')
