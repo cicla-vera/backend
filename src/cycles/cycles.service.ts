@@ -1,4 +1,8 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateCycleDto } from './dto/create-cycle.dto';
 import { UpdateCycleDto } from './dto/update-cycle.dto';
@@ -230,6 +234,199 @@ export class CyclesService {
     };
   }
 
+  async getMonthlySummary(userId: string, month: string) {
+    const { startDate, endDate } = this.getMonthRange(month);
+    const dateFilter = { gte: startDate, lt: endDate };
+
+    const [
+      cycles,
+      symptomEntries,
+      moodEntries,
+      flowEntries,
+      notes,
+      temperatureEntries,
+      weightEntries,
+      waterEntries,
+      activityEntries,
+      sleepEntries,
+      intercourseEntries,
+      medicationEntries,
+    ] = await Promise.all([
+      this.prisma.cycleLog.findMany({
+        where: {
+          userId,
+          startDate: { lt: endDate },
+          OR: [{ endDate: null }, { endDate: { gte: startDate } }],
+        },
+        orderBy: { startDate: 'desc' },
+      }),
+      this.prisma.symptomEntry.findMany({
+        where: { userId, date: dateFilter },
+        include: { symptom: true },
+        orderBy: { date: 'desc' },
+      }),
+      this.prisma.moodEntry.findMany({
+        where: { userId, date: dateFilter },
+        orderBy: { date: 'desc' },
+      }),
+      this.prisma.flowEntry.findMany({
+        where: { userId, date: dateFilter },
+        orderBy: { date: 'desc' },
+      }),
+      this.prisma.note.findMany({
+        where: { userId, date: dateFilter },
+        orderBy: { date: 'desc' },
+      }),
+      this.prisma.temperatureEntry.findMany({
+        where: { userId, date: dateFilter },
+        orderBy: { date: 'desc' },
+      }),
+      this.prisma.weightEntry.findMany({
+        where: { userId, date: dateFilter },
+        orderBy: { date: 'desc' },
+      }),
+      this.prisma.waterEntry.findMany({
+        where: { userId, date: dateFilter },
+        orderBy: { date: 'desc' },
+      }),
+      this.prisma.activityEntry.findMany({
+        where: { userId, date: dateFilter },
+        orderBy: { date: 'desc' },
+      }),
+      this.prisma.sleepEntry.findMany({
+        where: { userId, date: dateFilter },
+        orderBy: { date: 'desc' },
+      }),
+      this.prisma.intercourseEntry.findMany({
+        where: { userId, date: dateFilter },
+        orderBy: { date: 'desc' },
+      }),
+      this.prisma.medicationEntry.findMany({
+        where: { userId, date: dateFilter },
+        orderBy: { date: 'desc' },
+      }),
+    ]);
+
+    const totalWater = waterEntries.reduce(
+      (sum, entry) => sum + entry.amount,
+      0,
+    );
+    const activityDuration = activityEntries.reduce(
+      (sum, entry) => sum + entry.duration,
+      0,
+    );
+    const protectedIntercourse = intercourseEntries.filter(
+      (entry) => entry.protected,
+    ).length;
+
+    return {
+      month,
+      range: {
+        start: this.formatDate(startDate),
+        end: this.formatDate(new Date(endDate.getTime() - DAY_IN_MS)),
+      },
+      cycles: {
+        total: cycles.length,
+        periodDays: cycles.reduce(
+          (sum, cycle) =>
+            sum +
+            this.calculateOverlapDays(
+              cycle.startDate,
+              cycle.endDate,
+              startDate,
+              endDate,
+            ),
+          0,
+        ),
+        entries: cycles.map((cycle) => ({
+          id: cycle.id,
+          startDate: cycle.startDate,
+          endDate: cycle.endDate,
+          duration: this.getPeriodDuration(
+            cycle.duration,
+            cycle.startDate,
+            cycle.endDate,
+          ),
+        })),
+      },
+      symptoms: {
+        totalEntries: symptomEntries.length,
+        topSymptoms: this.getSymptomCounts(symptomEntries),
+      },
+      moods: {
+        totalEntries: moodEntries.length,
+        distribution: this.getValueCounts(
+          moodEntries.map((entry) => entry.mood),
+        ),
+      },
+      flow: {
+        totalEntries: flowEntries.length,
+        daysWithFlow: this.getUniqueDateCount(
+          flowEntries.map((entry) => entry.date),
+        ),
+        distribution: this.getValueCounts(
+          flowEntries.map((entry) => entry.intensity),
+        ),
+      },
+      notes: {
+        totalEntries: notes.length,
+      },
+      health: {
+        temperature: this.getNumericSummary(
+          temperatureEntries.map((entry) => entry.temperature),
+        ),
+        weight: this.getNumericSummary(
+          weightEntries.map((entry) => entry.weight),
+        ),
+        water: {
+          totalEntries: waterEntries.length,
+          totalAmount: totalWater,
+          daysTracked: this.getUniqueDateCount(
+            waterEntries.map((entry) => entry.date),
+          ),
+          averageAmountPerEntry:
+            waterEntries.length > 0
+              ? this.roundToOneDecimal(totalWater / waterEntries.length)
+              : null,
+        },
+        activity: {
+          totalEntries: activityEntries.length,
+          totalDuration: activityDuration,
+          averageDuration:
+            activityEntries.length > 0
+              ? this.roundToOneDecimal(
+                  activityDuration / activityEntries.length,
+                )
+              : null,
+          byType: this.getValueCounts(
+            activityEntries.map((entry) => entry.type),
+          ),
+          byIntensity: this.getValueCounts(
+            activityEntries.map((entry) => entry.intensity),
+          ),
+        },
+        sleep: {
+          ...this.getNumericSummary(sleepEntries.map((entry) => entry.hours)),
+          qualityDistribution: this.getValueCounts(
+            sleepEntries.map((entry) => entry.quality),
+          ),
+        },
+        intercourse: {
+          totalEntries: intercourseEntries.length,
+          protected: protectedIntercourse,
+          unprotected: intercourseEntries.length - protectedIntercourse,
+        },
+        medications: {
+          totalEntries: medicationEntries.length,
+          uniqueMedications: this.getValueCounts(
+            medicationEntries.map((entry) => entry.name),
+          ),
+        },
+      },
+      generatedAt: new Date().toISOString(),
+    };
+  }
+
   private calculateDayDifference(startDate: Date, endDate: Date) {
     return Math.round((endDate.getTime() - startDate.getTime()) / DAY_IN_MS);
   }
@@ -244,6 +441,109 @@ export class CyclesService {
     }
 
     return duration ?? this.calculateDayDifference(startDate, endDate);
+  }
+
+  private getMonthRange(month: string) {
+    const match = /^(\d{4})-(0[1-9]|1[0-2])$/.exec(month);
+
+    if (!match) {
+      throw new BadRequestException('Month must be in YYYY-MM format.');
+    }
+
+    const year = Number(match[1]);
+    const monthIndex = Number(match[2]) - 1;
+
+    return {
+      startDate: new Date(Date.UTC(year, monthIndex, 1)),
+      endDate: new Date(Date.UTC(year, monthIndex + 1, 1)),
+    };
+  }
+
+  private calculateOverlapDays(
+    startDate: Date,
+    endDate: Date | null,
+    rangeStart: Date,
+    rangeEnd: Date,
+  ) {
+    const overlapStart =
+      startDate > rangeStart ? startDate.getTime() : rangeStart.getTime();
+    const effectiveEnd = endDate ?? rangeEnd;
+    const overlapEnd =
+      effectiveEnd < rangeEnd ? effectiveEnd.getTime() : rangeEnd.getTime();
+
+    if (overlapEnd <= overlapStart) {
+      return 0;
+    }
+
+    return Math.round((overlapEnd - overlapStart) / DAY_IN_MS);
+  }
+
+  private getNumericSummary(values: number[]) {
+    return {
+      totalEntries: values.length,
+      average:
+        values.length > 0
+          ? this.roundToOneDecimal(
+              values.reduce((sum, value) => sum + value, 0) / values.length,
+            )
+          : null,
+      min: values.length > 0 ? Math.min(...values) : null,
+      max: values.length > 0 ? Math.max(...values) : null,
+    };
+  }
+
+  private getValueCounts(values: string[]) {
+    const counts = new Map<string, number>();
+
+    for (const value of values) {
+      counts.set(value, (counts.get(value) ?? 0) + 1);
+    }
+
+    return this.sortCounts(
+      [...counts.entries()].map(([value, count]) => ({ value, count })),
+      (item) => item.value,
+    );
+  }
+
+  private getSymptomCounts(symptomEntries: SymptomEntryWithSymptom[]) {
+    const counts = new Map<
+      string,
+      {
+        symptomId: string;
+        name: string;
+        count: number;
+      }
+    >();
+
+    for (const entry of symptomEntries) {
+      const current = counts.get(entry.symptom.id) ?? {
+        symptomId: entry.symptom.id,
+        name: entry.symptom.name,
+        count: 0,
+      };
+
+      current.count += 1;
+      counts.set(entry.symptom.id, current);
+    }
+
+    return this.sortCounts([...counts.values()], (item) => item.name);
+  }
+
+  private sortCounts<T extends { count: number }>(
+    items: T[],
+    getLabel: (item: T) => string,
+  ) {
+    return items.sort(
+      (a, b) => b.count - a.count || getLabel(a).localeCompare(getLabel(b)),
+    );
+  }
+
+  private getUniqueDateCount(dates: Date[]) {
+    return new Set(dates.map((date) => this.formatDate(date))).size;
+  }
+
+  private formatDate(date: Date) {
+    return date.toISOString().split('T')[0];
   }
 
   private getAverage(values: number[]) {
