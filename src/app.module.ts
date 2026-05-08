@@ -17,6 +17,7 @@ import { ActivityModule } from './activity/activity.module';
 import { SleepModule } from './sleep/sleep.module';
 import { IntercourseModule } from './intercourse/intercourse.module';
 import { MedicationsModule } from './medications/medications.module';
+import { DataImportModule } from './data-import/data-import.module';
 
 @Module({
   imports: [
@@ -38,6 +39,7 @@ import { MedicationsModule } from './medications/medications.module';
     SleepModule,
     IntercourseModule,
     MedicationsModule,
+    DataImportModule,
   ],
   controllers: [AppController],
   providers: [AppService],
