@@ -11,6 +11,7 @@ import { MoodsModule } from './moods/moods.module';
 import { FlowModule } from './flow/flow.module';
 import { NotesModule } from './notes/notes.module';
 import { TemperatureModule } from './temperature/temperature.module';
+import { WeightModule } from './weight/weight.module';
 
 @Module({
   imports: [
@@ -26,6 +27,7 @@ import { TemperatureModule } from './temperature/temperature.module';
     FlowModule,
     NotesModule,
     TemperatureModule,
+    WeightModule,
   ],
   controllers: [AppController],
   providers: [AppService],
