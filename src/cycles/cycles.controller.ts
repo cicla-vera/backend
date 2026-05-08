@@ -43,6 +43,11 @@ export class CyclesController {
     return this.predictionService.predict(user.sub);
   }
 
+  @Get('insights')
+  getInsights(@CurrentUser() user: { sub: string }) {
+    return this.cyclesService.getInsights(user.sub);
+  }
+
   @Get(':id')
   findOne(@CurrentUser() user: { sub: string }, @Param('id') id: string) {
     return this.cyclesService.findOne(user.sub, id);
