@@ -15,6 +15,7 @@ import { WeightModule } from './weight/weight.module';
 import { WaterModule } from './water/water.module';
 import { ActivityModule } from './activity/activity.module';
 import { SleepModule } from './sleep/sleep.module';
+import { IntercourseModule } from './intercourse/intercourse.module';
 
 @Module({
   imports: [
@@ -34,6 +35,7 @@ import { SleepModule } from './sleep/sleep.module';
     WaterModule,
     ActivityModule,
     SleepModule,
+    IntercourseModule,
   ],
   controllers: [AppController],
   providers: [AppService],
