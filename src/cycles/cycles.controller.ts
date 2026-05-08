@@ -48,6 +48,14 @@ export class CyclesController {
     return this.cyclesService.getInsights(user.sub);
   }
 
+  @Get('summary/:month')
+  getMonthlySummary(
+    @CurrentUser() user: { sub: string },
+    @Param('month') month: string,
+  ) {
+    return this.cyclesService.getMonthlySummary(user.sub, month);
+  }
+
   @Get(':id')
   findOne(@CurrentUser() user: { sub: string }, @Param('id') id: string) {
     return this.cyclesService.findOne(user.sub, id);
