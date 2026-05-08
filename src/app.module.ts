@@ -12,6 +12,7 @@ import { FlowModule } from './flow/flow.module';
 import { NotesModule } from './notes/notes.module';
 import { TemperatureModule } from './temperature/temperature.module';
 import { WeightModule } from './weight/weight.module';
+import { WaterModule } from './water/water.module';
 
 @Module({
   imports: [
@@ -28,6 +29,7 @@ import { WeightModule } from './weight/weight.module';
     NotesModule,
     TemperatureModule,
     WeightModule,
+    WaterModule,
   ],
   controllers: [AppController],
   providers: [AppService],
