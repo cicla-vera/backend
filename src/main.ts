@@ -1,10 +1,16 @@
 import 'dotenv/config';
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
+import type { NestExpressApplication } from '@nestjs/platform-express';
 import { AppModule } from './app.module';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create<NestExpressApplication>(AppModule);
+
+  app.useBodyParser('text', {
+    type: ['application/xml', 'text/xml', 'text/plain'],
+    limit: '25mb',
+  });
 
   app.useGlobalPipes(
     new ValidationPipe({

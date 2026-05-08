@@ -12,4 +12,20 @@ export class DataImportController {
   importFlo(@CurrentUser() user: { sub: string }, @Body() payload: unknown) {
     return this.dataImportService.importFlo(user.sub, payload);
   }
+
+  @Post('apple-health')
+  importAppleHealth(
+    @CurrentUser() user: { sub: string },
+    @Body() payload: unknown,
+  ) {
+    return this.dataImportService.importAppleHealth(user.sub, payload);
+  }
+
+  @Post('health-connect')
+  importHealthConnect(
+    @CurrentUser() user: { sub: string },
+    @Body() payload: unknown,
+  ) {
+    return this.dataImportService.importHealthConnect(user.sub, payload);
+  }
 }

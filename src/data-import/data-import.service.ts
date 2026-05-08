@@ -6,6 +6,7 @@ import {
   MoodType,
   SleepQuality,
 } from '@prisma/client';
+import { XMLParser } from 'fast-xml-parser';
 import { PrismaService } from '../prisma/prisma.service';
 
 type ImportCounters = {
@@ -59,6 +60,380 @@ export class DataImportService {
       source: 'flo',
       imported: counters,
       processedRecords: allRecords.length,
+      generatedAt: new Date().toISOString(),
+    };
+  }
+
+  async importAppleHealth(userId: string, payload: unknown) {
+    const xml = this.getXmlPayload(
+      payload,
+      'Apple Health import payload must be XML text or an object with an xml field.',
+    );
+    const records = this.getAppleHealthRecords(xml);
+    const counters = this.createCounters();
+    const periodDates: Date[] = [];
+
+    for (const record of records) {
+      const type = this.getString(record, ['type']);
+
+      if (!type) {
+        continue;
+      }
+
+      const normalizedType = this.normalize(type);
+
+      if (normalizedType.includes('menstrualflow')) {
+        const date = this.getDate(record, ['startDate', 'date']);
+        const intensity = this.getAppleFlowIntensity(record);
+
+        if (!date || !intensity) {
+          counters.skipped += 1;
+          continue;
+        }
+
+        await this.prisma.flowEntry.create({
+          data: { userId, date, intensity },
+        });
+        counters.flowEntries += 1;
+        periodDates.push(date);
+        continue;
+      }
+
+      if (
+        normalizedType.includes('intermenstrualbleeding') ||
+        normalizedType.includes('spotting')
+      ) {
+        const date = this.getDate(record, ['startDate', 'date']);
+
+        if (!date) {
+          counters.skipped += 1;
+          continue;
+        }
+
+        await this.prisma.flowEntry.create({
+          data: { userId, date, intensity: FlowIntensity.SPOTTING },
+        });
+        counters.flowEntries += 1;
+        continue;
+      }
+
+      if (
+        normalizedType.includes('basalbodytemperature') ||
+        normalizedType.includes('bodytemperature')
+      ) {
+        const date = this.getDate(record, ['startDate', 'date']);
+        const temperature = this.getAppleTemperature(record);
+
+        if (!date || temperature === null) {
+          counters.skipped += 1;
+          continue;
+        }
+
+        await this.prisma.temperatureEntry.create({
+          data: { userId, date, temperature },
+        });
+        counters.temperatureEntries += 1;
+        continue;
+      }
+
+      if (normalizedType.includes('bodymass')) {
+        const date = this.getDate(record, ['startDate', 'date']);
+        const weight = this.getAppleWeight(record);
+
+        if (!date || weight === null) {
+          counters.skipped += 1;
+          continue;
+        }
+
+        await this.prisma.weightEntry.create({
+          data: { userId, date, weight },
+        });
+        counters.weightEntries += 1;
+        continue;
+      }
+
+      if (normalizedType.includes('dietarywater')) {
+        const date = this.getDate(record, ['startDate', 'date']);
+        const amount = this.getAppleWaterAmount(record);
+
+        if (!date || amount === undefined) {
+          counters.skipped += 1;
+          continue;
+        }
+
+        await this.prisma.waterEntry.create({
+          data: { userId, date, amount },
+        });
+        counters.waterEntries += 1;
+        continue;
+      }
+
+      if (normalizedType.includes('sleepanalysis')) {
+        const startDate = this.getDate(record, ['startDate']);
+        const endDate = this.getDate(record, ['endDate']);
+        const hours = this.getHoursBetween(startDate, endDate);
+
+        if (!startDate || hours === null) {
+          counters.skipped += 1;
+          continue;
+        }
+
+        await this.prisma.sleepEntry.create({
+          data: {
+            userId,
+            date: startDate,
+            hours,
+            quality: SleepQuality.GOOD,
+          },
+        });
+        counters.sleepEntries += 1;
+        continue;
+      }
+
+      if (normalizedType.includes('sexualactivity')) {
+        const date = this.getDate(record, ['startDate', 'date']);
+
+        if (!date) {
+          counters.skipped += 1;
+          continue;
+        }
+
+        await this.prisma.intercourseEntry.create({
+          data: {
+            userId,
+            date,
+            protected: this.getAppleProtectionUsed(record),
+          },
+        });
+        counters.intercourseEntries += 1;
+        continue;
+      }
+
+      const symptomName = this.getAppleSymptomName(type, record);
+      if (symptomName) {
+        const date = this.getDate(record, ['startDate', 'date']);
+
+        if (!date) {
+          counters.skipped += 1;
+          continue;
+        }
+
+        await this.createSymptomEntry(userId, date, symptomName);
+        counters.symptomEntries += 1;
+      }
+    }
+
+    await this.importCyclesFromPeriodDates(userId, periodDates, counters);
+
+    return {
+      source: 'apple-health',
+      imported: counters,
+      processedRecords: records.length,
+      generatedAt: new Date().toISOString(),
+    };
+  }
+
+  async importHealthConnect(userId: string, payload: unknown) {
+    if (!this.isRecord(payload) && !Array.isArray(payload)) {
+      throw new BadRequestException(
+        'Health Connect import payload must be a JSON object.',
+      );
+    }
+
+    const counters = this.createCounters();
+    const records = this.mergeRecords(
+      this.collectRecordsByContainer(payload, ['records', 'data', 'entries']),
+      this.collectRecords(payload).filter(
+        (record) => this.getHealthConnectRecordType(record) !== null,
+      ),
+    );
+    const periodDates: Date[] = [];
+    let explicitPeriodRecords = 0;
+
+    for (const record of records) {
+      const recordType = this.getHealthConnectRecordType(record);
+
+      if (!recordType) {
+        continue;
+      }
+
+      if (recordType.includes('menstruationperiodrecord')) {
+        const startDate = this.getDate(record, ['startTime', 'startDate']);
+        const endDate = this.getDate(record, ['endTime', 'endDate']);
+
+        if (!startDate || !endDate) {
+          counters.skipped += 1;
+          continue;
+        }
+
+        await this.prisma.cycleLog.create({
+          data: {
+            userId,
+            startDate,
+            endDate,
+            duration: this.calculateDayDifference(startDate, endDate),
+          },
+        });
+        counters.cycles += 1;
+        explicitPeriodRecords += 1;
+        continue;
+      }
+
+      if (recordType.includes('menstruationflowrecord')) {
+        const date = this.getDate(record, ['time', 'startTime', 'date']);
+        const intensity = this.getHealthConnectFlowIntensity(record);
+
+        if (!date || !intensity) {
+          counters.skipped += 1;
+          continue;
+        }
+
+        await this.prisma.flowEntry.create({
+          data: { userId, date, intensity },
+        });
+        counters.flowEntries += 1;
+        periodDates.push(date);
+        continue;
+      }
+
+      if (recordType.includes('intermenstrualbleedingrecord')) {
+        const date = this.getDate(record, ['time', 'startTime', 'date']);
+
+        if (!date) {
+          counters.skipped += 1;
+          continue;
+        }
+
+        await this.prisma.flowEntry.create({
+          data: { userId, date, intensity: FlowIntensity.SPOTTING },
+        });
+        counters.flowEntries += 1;
+        continue;
+      }
+
+      if (
+        recordType.includes('basalbodytemperaturerecord') ||
+        recordType.includes('bodytemperaturerecord')
+      ) {
+        const date = this.getDate(record, ['time', 'startTime', 'date']);
+        const temperature = this.getHealthConnectTemperature(record);
+
+        if (!date || temperature === null) {
+          counters.skipped += 1;
+          continue;
+        }
+
+        await this.prisma.temperatureEntry.create({
+          data: { userId, date, temperature },
+        });
+        counters.temperatureEntries += 1;
+        continue;
+      }
+
+      if (recordType.includes('weightrecord')) {
+        const date = this.getDate(record, ['time', 'startTime', 'date']);
+        const weight = this.getHealthConnectMass(record);
+
+        if (!date || weight === null) {
+          counters.skipped += 1;
+          continue;
+        }
+
+        await this.prisma.weightEntry.create({
+          data: { userId, date, weight },
+        });
+        counters.weightEntries += 1;
+        continue;
+      }
+
+      if (recordType.includes('hydrationrecord')) {
+        const date = this.getDate(record, ['time', 'startTime', 'date']);
+        const amount = this.getHealthConnectVolume(record);
+
+        if (!date || amount === undefined) {
+          counters.skipped += 1;
+          continue;
+        }
+
+        await this.prisma.waterEntry.create({
+          data: { userId, date, amount },
+        });
+        counters.waterEntries += 1;
+        continue;
+      }
+
+      if (recordType.includes('sleepsessionrecord')) {
+        const startDate = this.getDate(record, ['startTime', 'startDate']);
+        const endDate = this.getDate(record, ['endTime', 'endDate']);
+        const hours = this.getHoursBetween(startDate, endDate);
+
+        if (!startDate || hours === null) {
+          counters.skipped += 1;
+          continue;
+        }
+
+        await this.prisma.sleepEntry.create({
+          data: {
+            userId,
+            date: startDate,
+            hours,
+            quality: SleepQuality.GOOD,
+          },
+        });
+        counters.sleepEntries += 1;
+        continue;
+      }
+
+      if (recordType.includes('exercisesessionrecord')) {
+        const startDate = this.getDate(record, ['startTime', 'startDate']);
+        const endDate = this.getDate(record, ['endTime', 'endDate']);
+        const duration =
+          this.getIntegerInRange(
+            record,
+            ['duration', 'durationMinutes'],
+            1,
+            1440,
+          ) ?? this.getMinutesBetween(startDate, endDate);
+        const type = this.getActivityType(record);
+        const intensity = this.getActivityIntensity(record);
+
+        if (!startDate || duration === undefined || !type || !intensity) {
+          counters.skipped += 1;
+          continue;
+        }
+
+        await this.prisma.activityEntry.create({
+          data: { userId, date: startDate, type, intensity, duration },
+        });
+        counters.activityEntries += 1;
+        continue;
+      }
+
+      if (recordType.includes('sexualactivityrecord')) {
+        const date = this.getDate(record, ['time', 'startTime', 'date']);
+        const protectedValue =
+          this.getBoolean(record, ['protected', 'isProtected']) ?? false;
+
+        if (!date) {
+          counters.skipped += 1;
+          continue;
+        }
+
+        await this.prisma.intercourseEntry.create({
+          data: { userId, date, protected: protectedValue },
+        });
+        counters.intercourseEntries += 1;
+      }
+    }
+
+    if (explicitPeriodRecords === 0) {
+      await this.importCyclesFromPeriodDates(userId, periodDates, counters);
+    }
+
+    return {
+      source: 'health-connect',
+      imported: counters,
+      processedRecords: records.length,
       generatedAt: new Date().toISOString(),
     };
   }
@@ -577,6 +952,451 @@ export class DataImportService {
     }
   }
 
+  private async importCyclesFromPeriodDates(
+    userId: string,
+    dates: Date[],
+    counters: ImportCounters,
+  ) {
+    const uniqueDates = [...new Set(dates.map((date) => this.formatDate(date)))]
+      .map((date) => new Date(`${date}T00:00:00.000Z`))
+      .sort((a, b) => a.getTime() - b.getTime());
+
+    if (uniqueDates.length === 0) {
+      return;
+    }
+
+    const groups: Date[][] = [];
+    for (const date of uniqueDates) {
+      const currentGroup = groups[groups.length - 1];
+      const previousDate = currentGroup?.[currentGroup.length - 1];
+
+      if (
+        !currentGroup ||
+        !previousDate ||
+        this.calculateDayDifference(previousDate, date) > 1
+      ) {
+        groups.push([date]);
+        continue;
+      }
+
+      currentGroup.push(date);
+    }
+
+    for (const group of groups) {
+      const startDate = group[0];
+      const lastDate = group[group.length - 1];
+      const endDate = new Date(lastDate);
+      endDate.setUTCDate(lastDate.getUTCDate() + 1);
+
+      await this.prisma.cycleLog.create({
+        data: {
+          userId,
+          startDate,
+          endDate,
+          duration: this.calculateDayDifference(startDate, endDate),
+        },
+      });
+      counters.cycles += 1;
+    }
+  }
+
+  private async createSymptomEntry(
+    userId: string,
+    date: Date,
+    symptomName: string,
+  ) {
+    const symptom = await this.prisma.symptom.upsert({
+      where: { name: symptomName },
+      update: {},
+      create: { name: symptomName },
+    });
+
+    await this.prisma.symptomEntry.create({
+      data: {
+        userId,
+        date,
+        symptomId: symptom.id,
+      },
+    });
+  }
+
+  private getXmlPayload(payload: unknown, errorMessage: string) {
+    if (typeof payload === 'string' && payload.trim().length > 0) {
+      return payload;
+    }
+
+    if (this.isRecord(payload)) {
+      const xml = this.getString(payload, [
+        'xml',
+        'exportXml',
+        'data',
+        'content',
+      ]);
+
+      if (xml) {
+        return xml;
+      }
+    }
+
+    throw new BadRequestException(errorMessage);
+  }
+
+  private getAppleHealthRecords(xml: string) {
+    const parser = new XMLParser({
+      ignoreAttributes: false,
+      attributeNamePrefix: '',
+      parseAttributeValue: false,
+      parseTagValue: false,
+    });
+
+    const parsed = parser.parse(xml) as unknown;
+    const healthData = this.isRecord(parsed) ? parsed.HealthData : undefined;
+    const records = this.isRecord(healthData)
+      ? this.toRecordArray(healthData.Record)
+      : [];
+
+    if (records.length === 0) {
+      throw new BadRequestException(
+        'Apple Health XML does not contain HealthData Record entries.',
+      );
+    }
+
+    return records;
+  }
+
+  private getAppleFlowIntensity(record: JsonRecord) {
+    const value = this.getString(record, ['value']);
+
+    if (!value) {
+      return null;
+    }
+
+    const normalized = this.normalize(value);
+    const map: Record<string, FlowIntensity | null> = {
+      '1': FlowIntensity.MEDIUM,
+      '2': FlowIntensity.LIGHT,
+      '3': FlowIntensity.MEDIUM,
+      '4': FlowIntensity.HEAVY,
+      '5': null,
+      unspecified: FlowIntensity.MEDIUM,
+      light: FlowIntensity.LIGHT,
+      medium: FlowIntensity.MEDIUM,
+      heavy: FlowIntensity.HEAVY,
+      none: null,
+    };
+
+    if (map[normalized] !== undefined) {
+      return map[normalized];
+    }
+
+    if (normalized.includes('light')) {
+      return FlowIntensity.LIGHT;
+    }
+
+    if (normalized.includes('medium')) {
+      return FlowIntensity.MEDIUM;
+    }
+
+    if (normalized.includes('heavy')) {
+      return FlowIntensity.HEAVY;
+    }
+
+    return null;
+  }
+
+  private getAppleTemperature(record: JsonRecord) {
+    const value = this.getNumber(record, ['value', 'temperature']);
+
+    if (value === null) {
+      return null;
+    }
+
+    const unit = this.getString(record, ['unit']);
+
+    if (unit && this.normalize(unit).includes('degf')) {
+      return this.roundToOneDecimal(((value - 32) * 5) / 9);
+    }
+
+    return value;
+  }
+
+  private getAppleWeight(record: JsonRecord) {
+    const value = this.getNumber(record, ['value', 'weight']);
+
+    if (value === null) {
+      return null;
+    }
+
+    const unit = this.getString(record, ['unit']);
+    const normalizedUnit = unit ? this.normalize(unit) : '';
+
+    if (['lb', 'lbs', 'pound', 'pounds'].includes(normalizedUnit)) {
+      return this.roundToOneDecimal(value * 0.45359237);
+    }
+
+    return value;
+  }
+
+  private getAppleWaterAmount(record: JsonRecord) {
+    const value = this.getNumber(record, ['value', 'amount']);
+
+    if (value === null) {
+      return undefined;
+    }
+
+    const unit = this.getString(record, ['unit']);
+    const normalizedUnit = unit ? this.normalize(unit) : '';
+    const amount =
+      normalizedUnit === 'l' || normalizedUnit === 'liter'
+        ? value * 1000
+        : value;
+
+    return Math.round(amount);
+  }
+
+  private getAppleProtectionUsed(record: JsonRecord) {
+    const metadataValue = this.getMetadataValue(
+      record,
+      'HKSexualActivityProtectionUsed',
+    );
+
+    if (metadataValue === null) {
+      return false;
+    }
+
+    return ['1', 'true', 'yes'].includes(this.normalize(metadataValue));
+  }
+
+  private getAppleSymptomName(type: string, record: JsonRecord) {
+    const normalizedType = this.normalize(type);
+    const value = this.getString(record, ['value']);
+
+    if (normalizedType.includes('cervicalmucusquality')) {
+      return `Cervical mucus${value ? `: ${value}` : ''}`;
+    }
+
+    if (normalizedType.includes('ovulationtestresult')) {
+      return `Ovulation test${value ? `: ${value}` : ''}`;
+    }
+
+    if (normalizedType.includes('progesteronetestresult')) {
+      return `Progesterone test${value ? `: ${value}` : ''}`;
+    }
+
+    if (normalizedType.includes('pregnancytestresult')) {
+      return `Pregnancy test${value ? `: ${value}` : ''}`;
+    }
+
+    return null;
+  }
+
+  private getMetadataValue(record: JsonRecord, key: string) {
+    const metadataEntries = this.toRecordArray(record.MetadataEntry);
+
+    for (const metadata of metadataEntries) {
+      const metadataKey = this.getString(metadata, ['key']);
+
+      if (metadataKey && this.normalize(metadataKey) === this.normalize(key)) {
+        return this.getString(metadata, ['value']);
+      }
+    }
+
+    return null;
+  }
+
+  private getHealthConnectRecordType(record: JsonRecord) {
+    const value = this.getString(record, [
+      'recordType',
+      'dataType',
+      'type',
+      'name',
+      'kind',
+    ]);
+
+    return value ? this.normalize(value) : null;
+  }
+
+  private getHealthConnectFlowIntensity(record: JsonRecord) {
+    const value = this.getString(record, [
+      'flow',
+      'menstruationFlowType',
+      'value',
+    ]);
+
+    if (!value) {
+      return null;
+    }
+
+    const normalized = this.normalize(value);
+    const map: Record<string, FlowIntensity | null> = {
+      '0': null,
+      '1': FlowIntensity.LIGHT,
+      '2': FlowIntensity.MEDIUM,
+      '3': FlowIntensity.HEAVY,
+      '4': FlowIntensity.VERY_HEAVY,
+      unknown: null,
+      light: FlowIntensity.LIGHT,
+      medium: FlowIntensity.MEDIUM,
+      heavy: FlowIntensity.HEAVY,
+      veryheavy: FlowIntensity.VERY_HEAVY,
+    };
+
+    return map[normalized] ?? null;
+  }
+
+  private getHealthConnectTemperature(record: JsonRecord) {
+    const celsius = this.getFirstNestedNumber(record, [
+      ['temperature', 'inCelsius'],
+      ['temperature', 'inCelsiusDegrees'],
+      ['bodyTemperature', 'inCelsius'],
+      ['value', 'inCelsius'],
+    ]);
+
+    if (celsius !== null) {
+      return celsius;
+    }
+
+    const fahrenheit = this.getFirstNestedNumber(record, [
+      ['temperature', 'inFahrenheit'],
+      ['bodyTemperature', 'inFahrenheit'],
+      ['value', 'inFahrenheit'],
+    ]);
+
+    if (fahrenheit !== null) {
+      return this.roundToOneDecimal(((fahrenheit - 32) * 5) / 9);
+    }
+
+    return this.getNumber(record, ['temperature', 'value']);
+  }
+
+  private getHealthConnectMass(record: JsonRecord) {
+    const kilograms = this.getFirstNestedNumber(record, [
+      ['weight', 'inKilograms'],
+      ['mass', 'inKilograms'],
+      ['value', 'inKilograms'],
+    ]);
+
+    if (kilograms !== null) {
+      return kilograms;
+    }
+
+    const grams = this.getFirstNestedNumber(record, [
+      ['weight', 'inGrams'],
+      ['mass', 'inGrams'],
+      ['value', 'inGrams'],
+    ]);
+
+    if (grams !== null) {
+      return this.roundToOneDecimal(grams / 1000);
+    }
+
+    const pounds = this.getFirstNestedNumber(record, [
+      ['weight', 'inPounds'],
+      ['mass', 'inPounds'],
+      ['value', 'inPounds'],
+    ]);
+
+    if (pounds !== null) {
+      return this.roundToOneDecimal(pounds * 0.45359237);
+    }
+
+    return this.getNumber(record, ['weight', 'mass', 'value']);
+  }
+
+  private getHealthConnectVolume(record: JsonRecord) {
+    const milliliters = this.getFirstNestedNumber(record, [
+      ['volume', 'inMilliliters'],
+      ['amount', 'inMilliliters'],
+      ['value', 'inMilliliters'],
+    ]);
+
+    if (milliliters !== null) {
+      return Math.round(milliliters);
+    }
+
+    const liters = this.getFirstNestedNumber(record, [
+      ['volume', 'inLiters'],
+      ['amount', 'inLiters'],
+      ['value', 'inLiters'],
+    ]);
+
+    if (liters !== null) {
+      return Math.round(liters * 1000);
+    }
+
+    const value = this.getNumber(record, [
+      'amount',
+      'milliliters',
+      'ml',
+      'value',
+    ]);
+    return value === null ? undefined : Math.round(value);
+  }
+
+  private getHoursBetween(startDate: Date | null, endDate: Date | null) {
+    if (!startDate || !endDate || endDate <= startDate) {
+      return null;
+    }
+
+    return this.roundToOneDecimal(
+      (endDate.getTime() - startDate.getTime()) / (60 * 60 * 1000),
+    );
+  }
+
+  private getMinutesBetween(startDate: Date | null, endDate: Date | null) {
+    if (!startDate || !endDate || endDate <= startDate) {
+      return undefined;
+    }
+
+    return Math.round((endDate.getTime() - startDate.getTime()) / (60 * 1000));
+  }
+
+  private getFirstNestedNumber(record: JsonRecord, paths: string[][]) {
+    for (const path of paths) {
+      const value = this.getNestedValue(record, path);
+
+      if (typeof value === 'number' && Number.isFinite(value)) {
+        return value;
+      }
+
+      if (typeof value === 'string') {
+        const parsed = Number(value.replace(',', '.'));
+
+        if (Number.isFinite(parsed)) {
+          return parsed;
+        }
+      }
+    }
+
+    return null;
+  }
+
+  private getNestedValue(record: JsonRecord, path: string[]) {
+    let current: unknown = record;
+
+    for (const key of path) {
+      if (!this.isRecord(current)) {
+        return undefined;
+      }
+
+      current = this.getValue(current, [key]);
+    }
+
+    return current;
+  }
+
+  private toRecordArray(value: unknown) {
+    if (Array.isArray(value)) {
+      return value.filter((item): item is JsonRecord => this.isRecord(item));
+    }
+
+    return this.isRecord(value) ? [value] : [];
+  }
+
+  private formatDate(date: Date) {
+    return date.toISOString().split('T')[0];
+  }
+
   private createCounters(): ImportCounters {
     return {
       cycles: 0,
@@ -921,6 +1741,10 @@ export class DataImportService {
 
   private calculateDayDifference(startDate: Date, endDate: Date) {
     return Math.round((endDate.getTime() - startDate.getTime()) / DAY_IN_MS);
+  }
+
+  private roundToOneDecimal(value: number) {
+    return Math.round(value * 10) / 10;
   }
 
   private normalize(value: string) {
