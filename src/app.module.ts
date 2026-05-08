@@ -16,6 +16,7 @@ import { WaterModule } from './water/water.module';
 import { ActivityModule } from './activity/activity.module';
 import { SleepModule } from './sleep/sleep.module';
 import { IntercourseModule } from './intercourse/intercourse.module';
+import { MedicationsModule } from './medications/medications.module';
 
 @Module({
   imports: [
@@ -36,6 +37,7 @@ import { IntercourseModule } from './intercourse/intercourse.module';
     ActivityModule,
     SleepModule,
     IntercourseModule,
+    MedicationsModule,
   ],
   controllers: [AppController],
   providers: [AppService],
