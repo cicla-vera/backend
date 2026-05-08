@@ -13,6 +13,7 @@ import { NotesModule } from './notes/notes.module';
 import { TemperatureModule } from './temperature/temperature.module';
 import { WeightModule } from './weight/weight.module';
 import { WaterModule } from './water/water.module';
+import { ActivityModule } from './activity/activity.module';
 
 @Module({
   imports: [
@@ -30,6 +31,7 @@ import { WaterModule } from './water/water.module';
     TemperatureModule,
     WeightModule,
     WaterModule,
+    ActivityModule,
   ],
   controllers: [AppController],
   providers: [AppService],
