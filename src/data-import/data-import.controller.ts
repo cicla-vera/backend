@@ -13,6 +13,19 @@ export class DataImportController {
     return this.dataImportService.importFlo(user.sub, payload);
   }
 
+  @Post('clue')
+  importClue(@CurrentUser() user: { sub: string }, @Body() payload: unknown) {
+    return this.dataImportService.importClue(user.sub, payload);
+  }
+
+  @Post('period-calendar')
+  importPeriodCalendar(
+    @CurrentUser() user: { sub: string },
+    @Body() payload: unknown,
+  ) {
+    return this.dataImportService.importPeriodCalendar(user.sub, payload);
+  }
+
   @Post('apple-health')
   importAppleHealth(
     @CurrentUser() user: { sub: string },

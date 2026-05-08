@@ -7,6 +7,7 @@ import {
   SleepQuality,
 } from '@prisma/client';
 import { XMLParser } from 'fast-xml-parser';
+import { PDFParse } from 'pdf-parse';
 import { PrismaService } from '../prisma/prisma.service';
 
 type ImportCounters = {
@@ -60,6 +61,177 @@ export class DataImportService {
       source: 'flo',
       imported: counters,
       processedRecords: allRecords.length,
+      generatedAt: new Date().toISOString(),
+    };
+  }
+
+  async importClue(userId: string, payload: unknown) {
+    const measurements = this.getClueMeasurements(payload);
+    const counters = this.createCounters();
+    const periodDates: Date[] = [];
+
+    for (const measurement of measurements) {
+      const type = this.getString(measurement, ['type']);
+      const date = this.getDate(measurement, ['date']);
+
+      if (!type || !date) {
+        counters.skipped += 1;
+        continue;
+      }
+
+      const normalizedType = this.normalize(type);
+
+      if (normalizedType === 'period') {
+        await this.prisma.flowEntry.create({
+          data: {
+            userId,
+            date,
+            intensity: this.getClueFlowIntensity(measurement),
+          },
+        });
+        counters.flowEntries += 1;
+        periodDates.push(date);
+        continue;
+      }
+
+      if (normalizedType.includes('temperature')) {
+        const temperature = this.getClueNumericValue(measurement);
+
+        if (temperature === null) {
+          counters.skipped += 1;
+          continue;
+        }
+
+        await this.prisma.temperatureEntry.create({
+          data: { userId, date, temperature },
+        });
+        counters.temperatureEntries += 1;
+        continue;
+      }
+
+      if (normalizedType.includes('weight')) {
+        const weight = this.getClueNumericValue(measurement);
+
+        if (weight === null) {
+          counters.skipped += 1;
+          continue;
+        }
+
+        await this.prisma.weightEntry.create({
+          data: { userId, date, weight },
+        });
+        counters.weightEntries += 1;
+        continue;
+      }
+
+      if (normalizedType.includes('sleep')) {
+        const hours = this.getClueNumericValue(measurement);
+
+        if (hours === null) {
+          counters.skipped += 1;
+          continue;
+        }
+
+        await this.prisma.sleepEntry.create({
+          data: { userId, date, hours, quality: SleepQuality.GOOD },
+        });
+        counters.sleepEntries += 1;
+        continue;
+      }
+
+      if (normalizedType.includes('sex')) {
+        const option = this.getClueOption(measurement);
+        await this.prisma.intercourseEntry.create({
+          data: {
+            userId,
+            date,
+            protected: option
+              ? this.normalize(option).includes('protected')
+              : false,
+          },
+        });
+        counters.intercourseEntries += 1;
+        continue;
+      }
+
+      if (normalizedType.includes('pill')) {
+        await this.prisma.medicationEntry.create({
+          data: {
+            userId,
+            date,
+            name: this.getClueOption(measurement) ?? 'Pill',
+          },
+        });
+        counters.medicationEntries += 1;
+        continue;
+      }
+
+      const mood = this.getMoodType({
+        mood: this.getClueOption(measurement) ?? type,
+      });
+      if (normalizedType.includes('mood') && mood) {
+        await this.prisma.moodEntry.create({
+          data: { userId, date, mood },
+        });
+        counters.moodEntries += 1;
+        continue;
+      }
+
+      const symptomName = this.getClueSymptomName(measurement);
+      if (symptomName) {
+        await this.createSymptomEntry(userId, date, symptomName);
+        counters.symptomEntries += 1;
+        continue;
+      }
+
+      counters.skipped += 1;
+    }
+
+    await this.importCyclesFromPeriodDates(userId, periodDates, counters);
+
+    return {
+      source: 'clue',
+      imported: counters,
+      processedRecords: measurements.length,
+      generatedAt: new Date().toISOString(),
+    };
+  }
+
+  async importPeriodCalendar(userId: string, payload: unknown) {
+    const text = await this.getPeriodCalendarText(payload);
+    const referenceYear = this.getPeriodCalendarReferenceYear(payload);
+    const periodRows = this.getPeriodCalendarRows(text, referenceYear);
+    const counters = this.createCounters();
+
+    for (const row of periodRows) {
+      const endDate = new Date(row.startDate);
+      endDate.setUTCDate(row.startDate.getUTCDate() + row.periodLength);
+
+      await this.prisma.cycleLog.create({
+        data: {
+          userId,
+          startDate: row.startDate,
+          endDate,
+          duration: row.periodLength,
+        },
+      });
+      counters.cycles += 1;
+
+      for (let index = 0; index < row.periodLength; index += 1) {
+        const date = new Date(row.startDate);
+        date.setUTCDate(row.startDate.getUTCDate() + index);
+
+        await this.prisma.flowEntry.create({
+          data: { userId, date, intensity: FlowIntensity.MEDIUM },
+        });
+        counters.flowEntries += 1;
+      }
+    }
+
+    return {
+      source: 'period-calendar',
+      imported: counters,
+      processedRecords: periodRows.length,
       generatedAt: new Date().toISOString(),
     };
   }
@@ -950,6 +1122,204 @@ export class DataImportService {
       });
       counters.medicationEntries += 1;
     }
+  }
+
+  private getClueMeasurements(payload: unknown) {
+    if (Array.isArray(payload)) {
+      return payload.filter((item): item is JsonRecord => this.isRecord(item));
+    }
+
+    if (!this.isRecord(payload)) {
+      throw new BadRequestException(
+        'Clue import payload must be measurements JSON.',
+      );
+    }
+
+    const measurements = this.getValue(payload, [
+      'measurements',
+      'measurementsJson',
+      'data',
+    ]);
+
+    if (Array.isArray(measurements)) {
+      return measurements.filter((item): item is JsonRecord =>
+        this.isRecord(item),
+      );
+    }
+
+    if (this.getString(payload, ['type']) && this.getDate(payload, ['date'])) {
+      return [payload];
+    }
+
+    throw new BadRequestException(
+      'Clue import payload must contain a measurements array.',
+    );
+  }
+
+  private getClueFlowIntensity(measurement: JsonRecord) {
+    const option = this.getClueOption(measurement);
+
+    if (!option) {
+      return FlowIntensity.MEDIUM;
+    }
+
+    const normalized = this.normalize(option);
+    const map: Record<string, FlowIntensity> = {
+      spotting: FlowIntensity.SPOTTING,
+      light: FlowIntensity.LIGHT,
+      medium: FlowIntensity.MEDIUM,
+      heavy: FlowIntensity.HEAVY,
+      veryheavy: FlowIntensity.VERY_HEAVY,
+    };
+
+    return map[normalized] ?? FlowIntensity.MEDIUM;
+  }
+
+  private getClueNumericValue(measurement: JsonRecord) {
+    const directValue = this.getNumber(measurement, ['value']);
+
+    if (directValue !== null) {
+      return directValue;
+    }
+
+    const value = this.getValue(measurement, ['value']);
+
+    if (!this.isRecord(value)) {
+      return null;
+    }
+
+    return this.getNumber(value, ['amount', 'number', 'value']);
+  }
+
+  private getClueOption(measurement: JsonRecord) {
+    const value = this.getValue(measurement, ['value']);
+
+    if (!this.isRecord(value)) {
+      return this.getString(measurement, ['value', 'option', 'name']);
+    }
+
+    return this.getString(value, ['option', 'name', 'value']);
+  }
+
+  private getClueSymptomName(measurement: JsonRecord) {
+    const type = this.getString(measurement, ['type']);
+
+    if (!type) {
+      return null;
+    }
+
+    const option = this.getClueOption(measurement);
+    const normalizedType = this.normalize(type);
+
+    if (
+      ['period', 'mood', 'temperature', 'weight', 'sleep', 'sex', 'pill'].some(
+        (ignoredType) => normalizedType.includes(ignoredType),
+      )
+    ) {
+      return null;
+    }
+
+    return option ? `${type}: ${option}` : type;
+  }
+
+  private async getPeriodCalendarText(payload: unknown) {
+    if (typeof payload === 'string' && payload.trim().length > 0) {
+      return payload;
+    }
+
+    if (!this.isRecord(payload)) {
+      throw new BadRequestException(
+        'Period Calendar import payload must include text or pdfBase64.',
+      );
+    }
+
+    const text = this.getString(payload, ['text', 'content']);
+    if (text) {
+      return text;
+    }
+
+    const pdfBase64 = this.getString(payload, ['pdfBase64', 'base64']);
+    if (!pdfBase64) {
+      throw new BadRequestException(
+        'Period Calendar import payload must include text or pdfBase64.',
+      );
+    }
+
+    const parser = new PDFParse({
+      data: Buffer.from(pdfBase64, 'base64'),
+    });
+
+    try {
+      const result = await parser.getText();
+      return result.text;
+    } finally {
+      await parser.destroy();
+    }
+  }
+
+  private getPeriodCalendarReferenceYear(payload: unknown) {
+    if (!this.isRecord(payload)) {
+      return new Date().getUTCFullYear();
+    }
+
+    return (
+      this.getIntegerInRange(payload, ['year', 'referenceYear'], 1900, 2200) ??
+      new Date().getUTCFullYear()
+    );
+  }
+
+  private getPeriodCalendarRows(text: string, referenceYear: number) {
+    const rows: { startDate: Date; periodLength: number }[] = [];
+    const historyRowRegex =
+      /(\d{2}\/\d{2})\s*-\s*(?:Hoje|\d{2}\/\d{2})\s+(\d+)\s*Dias/gi;
+
+    for (const match of text.matchAll(historyRowRegex)) {
+      const startDate = this.parseDayMonth(match[1], referenceYear);
+      const periodLength = Number(match[2]);
+
+      if (startDate && Number.isFinite(periodLength)) {
+        rows.push({ startDate, periodLength });
+      }
+    }
+
+    if (rows.length > 0) {
+      return rows;
+    }
+
+    const lastPeriodMatch = /ÚLTIMA MENSTRUAÇÃO\s+(\d{2}\/\d{2})/i.exec(text);
+    const periodLengthMatch =
+      /DURAÇÃO MÉDIA DA MENSTRUAÇÃO\s+(\d+)\s*dias/i.exec(text);
+    const startDate = lastPeriodMatch
+      ? this.parseDayMonth(lastPeriodMatch[1], referenceYear)
+      : null;
+    const periodLength = periodLengthMatch ? Number(periodLengthMatch[1]) : 5;
+
+    if (!startDate || !Number.isFinite(periodLength)) {
+      throw new BadRequestException(
+        'Period Calendar report does not contain recognizable cycle rows.',
+      );
+    }
+
+    return [{ startDate, periodLength }];
+  }
+
+  private parseDayMonth(value: string, referenceYear: number) {
+    const match = /^(\d{2})\/(\d{2})$/.exec(value);
+
+    if (!match) {
+      return null;
+    }
+
+    const day = Number(match[1]);
+    const month = Number(match[2]);
+    const date = new Date(Date.UTC(referenceYear, month - 1, day));
+    const today = new Date();
+
+    if (date.getTime() - today.getTime() > 45 * DAY_IN_MS) {
+      date.setUTCFullYear(referenceYear - 1);
+    }
+
+    return date;
   }
 
   private async importCyclesFromPeriodDates(
