@@ -10,6 +10,14 @@ import { SymptomsModule } from './symptoms/symptoms.module';
 import { MoodsModule } from './moods/moods.module';
 import { FlowModule } from './flow/flow.module';
 import { NotesModule } from './notes/notes.module';
+import { TemperatureModule } from './temperature/temperature.module';
+import { WeightModule } from './weight/weight.module';
+import { WaterModule } from './water/water.module';
+import { ActivityModule } from './activity/activity.module';
+import { SleepModule } from './sleep/sleep.module';
+import { IntercourseModule } from './intercourse/intercourse.module';
+import { MedicationsModule } from './medications/medications.module';
+import { DataImportModule } from './data-import/data-import.module';
 
 @Module({
   imports: [
@@ -24,6 +32,14 @@ import { NotesModule } from './notes/notes.module';
     MoodsModule,
     FlowModule,
     NotesModule,
+    TemperatureModule,
+    WeightModule,
+    WaterModule,
+    ActivityModule,
+    SleepModule,
+    IntercourseModule,
+    MedicationsModule,
+    DataImportModule,
   ],
   controllers: [AppController],
   providers: [AppService],
