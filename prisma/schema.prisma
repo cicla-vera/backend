@@ -15,20 +15,22 @@ model User {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  profile              Profile?
-  cycleLogs            CycleLog[]
-  symptomEntries       SymptomEntry[]
-  moodEntries          MoodEntry[]
-  flowEntries          FlowEntry[]
-  notes                Note[]
-  temperatureEntries   TemperatureEntry[]
-  weightEntries        WeightEntry[]
-  waterEntries         WaterEntry[]
-  activityEntries      ActivityEntry[]
-  sleepEntries         SleepEntry[]
-  intercourseEntries   IntercourseEntry[]
-  medicationEntries    MedicationEntry[]
-  notificationSettings NotificationSettings?
+  profile                Profile?
+  cycleLogs              CycleLog[]
+  symptomEntries         SymptomEntry[]
+  moodEntries            MoodEntry[]
+  flowEntries            FlowEntry[]
+  notes                  Note[]
+  temperatureEntries     TemperatureEntry[]
+  weightEntries          WeightEntry[]
+  waterEntries           WaterEntry[]
+  activityEntries        ActivityEntry[]
+  sleepEntries           SleepEntry[]
+  intercourseEntries     IntercourseEntry[]
+  medicationEntries      MedicationEntry[]
+  notificationSettings   NotificationSettings?
+  notificationDevices    NotificationDevice[]
+  notificationDeliveries NotificationDelivery[]
 }
 
 model Profile {
@@ -224,14 +226,40 @@ model MedicationEntry {
 // ─── NOTIFICATIONS ───────────────────────────────────────────────────────────
 
 model NotificationSettings {
-  id                    String   @id @default(uuid())
-  userId                String   @unique
-  user                  User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  periodReminder        Boolean  @default(true)
-  ovulationReminder     Boolean  @default(true)
-  medicationReminder    Boolean  @default(false)
-  waterReminder         Boolean  @default(false)
-  reminderHour          Int      @default(8)
-  createdAt             DateTime @default(now())
-  updatedAt             DateTime @updatedAt
+  id                 String   @id @default(uuid())
+  userId             String   @unique
+  user               User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  periodReminder     Boolean  @default(true)
+  ovulationReminder  Boolean  @default(true)
+  medicationReminder Boolean  @default(false)
+  waterReminder      Boolean  @default(false)
+  reminderHour       Int      @default(8)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+}
+
+model NotificationDevice {
+  id         String   @id @default(uuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  token      String   @unique
+  platform   String?
+  enabled    Boolean  @default(true)
+  lastSeenAt DateTime @default(now())
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+}
+
+model NotificationDelivery {
+  id            String   @id @default(uuid())
+  userId        String
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type          String
+  referenceDate DateTime
+  title         String
+  body          String
+  sentAt        DateTime @default(now())
+
+  @@unique([userId, type, referenceDate])
+  @@index([userId, referenceDate])
 }
