@@ -10,6 +10,7 @@ import { EmergencyDispatchService } from './emergency-dispatch.service';
 import { EvidenceController } from './evidence.controller';
 import { EvidenceService } from './evidence.service';
 import { EvidenceStorageService } from './evidence-storage.service';
+import { MessagingProviderService } from './messaging-provider.service';
 import { SafetyLocationsController } from './safety-locations.controller';
 import { SafetyLocationsService } from './safety-locations.service';
 import { VeraPinController } from './vera-pin.controller';
@@ -36,6 +37,7 @@ import { VeraService } from './vera.service';
     AlertSessionsService,
     AlertEventsService,
     EmergencyDispatchService,
+    MessagingProviderService,
     EvidenceService,
     EvidenceStorageService,
   ],
@@ -47,6 +49,7 @@ import { VeraService } from './vera.service';
     AlertSessionsService,
     AlertEventsService,
     EmergencyDispatchService,
+    MessagingProviderService,
     EvidenceService,
     EvidenceStorageService,
   ],

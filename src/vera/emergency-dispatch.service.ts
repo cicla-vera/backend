@@ -12,6 +12,7 @@ import {
   type Profile,
 } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { MessagingProviderService } from './messaging-provider.service';
 
 type AlertSessionWithProfile = AlertSession & {
   user: {
@@ -28,6 +29,8 @@ type DispatchAttempt = {
   maskedPhone: string;
   status: DispatchStatus;
   eventType: AlertEventType;
+  provider: string;
+  providerMessageId?: string;
   reason?: string;
   message: string;
 };
@@ -39,11 +42,12 @@ type DispatchResponse = {
   attempts: DispatchAttempt[];
 };
 
-const MOCK_DISPATCH_MODE = 'mock';
-
 @Injectable()
 export class EmergencyDispatchService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private messagingProvider: MessagingProviderService,
+  ) {}
 
   async dispatchCriticalAlert(
     userId: string,
@@ -51,7 +55,6 @@ export class EmergencyDispatchService {
   ): Promise<DispatchResponse> {
     const session = await this.findDispatchableSession(userId, alertSessionId);
     const contacts = await this.findActiveContacts(userId);
-    const providerConfigured = this.isProviderConfigured();
 
     if (contacts.length === 0) {
       await this.prisma.alertEvent.create({
@@ -67,7 +70,7 @@ export class EmergencyDispatchService {
       return {
         alertSessionId,
         level: session.level,
-        providerConfigured,
+        providerConfigured: false,
         attempts: [],
       };
     }
@@ -76,7 +79,6 @@ export class EmergencyDispatchService {
       contacts.map((contact) =>
         this.createDispatchAttempt({
           contact,
-          providerConfigured,
           session,
           userId,
           alertSessionId,
@@ -87,7 +89,7 @@ export class EmergencyDispatchService {
     return {
       alertSessionId,
       level: session.level,
-      providerConfigured,
+      providerConfigured: attempts.some((attempt) => attempt.status === 'sent'),
       attempts,
     };
   }
@@ -137,30 +139,35 @@ export class EmergencyDispatchService {
 
   private async createDispatchAttempt(input: {
     contact: EmergencyContact;
-    providerConfigured: boolean;
     session: AlertSessionWithProfile;
     userId: string;
     alertSessionId: string;
   }): Promise<DispatchAttempt> {
     const message = this.buildEmergencyMessage(input.session);
-    const status: DispatchStatus = input.providerConfigured ? 'sent' : 'failed';
-    const eventType = input.providerConfigured
-      ? AlertEventType.CONTACT_NOTIFIED
-      : AlertEventType.CONTACT_NOTIFICATION_FAILED;
-    const reason = input.providerConfigured
-      ? undefined
-      : 'delivery_provider_not_configured';
+    const delivery = await this.messagingProvider.sendSms({
+      to: input.contact.phone,
+      body: message,
+    });
+    const status: DispatchStatus = delivery.status;
+    const eventType =
+      status === 'sent'
+        ? AlertEventType.CONTACT_NOTIFIED
+        : AlertEventType.CONTACT_NOTIFICATION_FAILED;
     const metadata: Record<string, string | number> = {
       contactId: input.contact.id,
       contactPriority: input.contact.priority,
       deliveryChannel: 'sms',
-      provider: this.getDispatchMode(),
+      provider: delivery.provider,
       status,
       message,
     };
 
-    if (reason) {
-      metadata.reason = reason;
+    if (delivery.providerMessageId) {
+      metadata.providerMessageId = delivery.providerMessageId;
+    }
+
+    if (delivery.failureReason) {
+      metadata.reason = delivery.failureReason;
     }
 
     await this.prisma.alertEvent.create({
@@ -168,9 +175,10 @@ export class EmergencyDispatchService {
         userId: input.userId,
         alertSessionId: input.alertSessionId,
         type: eventType,
-        message: input.providerConfigured
-          ? 'Emergency contact notification prepared.'
-          : 'Emergency contact notification could not be sent.',
+        message:
+          status === 'sent'
+            ? 'Emergency contact notification prepared.'
+            : 'Emergency contact notification could not be sent.',
         metadata,
       },
     });
@@ -182,7 +190,9 @@ export class EmergencyDispatchService {
       maskedPhone: this.maskPhone(input.contact.phone),
       status,
       eventType,
-      reason,
+      provider: delivery.provider,
+      providerMessageId: delivery.providerMessageId,
+      reason: delivery.failureReason,
       message,
     };
   }
@@ -220,13 +230,5 @@ export class EmergencyDispatchService {
     }
 
     return `${'*'.repeat(digits.length - visibleDigits)}${digits.slice(-visibleDigits)}`;
-  }
-
-  private isProviderConfigured(): boolean {
-    return this.getDispatchMode() === MOCK_DISPATCH_MODE;
-  }
-
-  private getDispatchMode(): string {
-    return process.env.EMERGENCY_CONTACT_DISPATCH_MODE ?? 'not_configured';
   }
 }
