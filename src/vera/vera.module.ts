@@ -1,5 +1,7 @@
 import { Module } from '@nestjs/common';
 import { AuthModule } from '../auth/auth.module';
+import { AlertEventsController } from './alert-events.controller';
+import { AlertEventsService } from './alert-events.service';
 import { AlertSessionsController } from './alert-sessions.controller';
 import { AlertSessionsService } from './alert-sessions.service';
 import { EmergencyContactsController } from './emergency-contacts.controller';
@@ -19,6 +21,7 @@ import { VeraService } from './vera.service';
     SafetyLocationsController,
     VeraPinController,
     AlertSessionsController,
+    AlertEventsController,
   ],
   providers: [
     VeraService,
@@ -26,6 +29,7 @@ import { VeraService } from './vera.service';
     SafetyLocationsService,
     VeraPinService,
     AlertSessionsService,
+    AlertEventsService,
   ],
   exports: [
     VeraService,
@@ -33,6 +37,7 @@ import { VeraService } from './vera.service';
     SafetyLocationsService,
     VeraPinService,
     AlertSessionsService,
+    AlertEventsService,
   ],
 })
 export class VeraModule {}
