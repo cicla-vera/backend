@@ -11,6 +11,10 @@ import {
 } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { EmergencyDispatchService } from './emergency-dispatch.service';
+import {
+  MessagingProviderService,
+  type SendSmsResult,
+} from './messaging-provider.service';
 
 type AlertSessionWithProfile = AlertSession & {
   user: {
@@ -61,6 +65,31 @@ type PrismaMock = {
     create: jest.Mock<Promise<AlertEvent>, [AlertEventCreateArgs]>;
   };
 };
+
+type MessagingProviderMock = {
+  sendSms: jest.Mock<
+    ReturnType<MessagingProviderService['sendSms']>,
+    Parameters<MessagingProviderService['sendSms']>
+  >;
+};
+
+const failedDelivery = (
+  overrides: Partial<SendSmsResult> = {},
+): SendSmsResult => ({
+  provider: 'unconfigured',
+  status: 'failed',
+  failureReason: 'sms_provider_not_configured',
+  ...overrides,
+});
+
+const sentDelivery = (
+  overrides: Partial<SendSmsResult> = {},
+): SendSmsResult => ({
+  provider: 'mock',
+  status: 'sent',
+  providerMessageId: 'mock-message-id',
+  ...overrides,
+});
 
 const baseProfile = (overrides: Partial<Profile> = {}): Profile => ({
   id: 'profile-id',
@@ -122,15 +151,11 @@ const baseEvent = (overrides: Partial<AlertEvent> = {}): AlertEvent => ({
 });
 
 describe('EmergencyDispatchService', () => {
-  const originalEnv = process.env;
   let service: EmergencyDispatchService;
   let prisma: PrismaMock;
+  let messagingProvider: MessagingProviderMock;
 
   beforeEach(() => {
-    process.env = {
-      ...originalEnv,
-      EMERGENCY_CONTACT_DISPATCH_MODE: 'not_configured',
-    };
     prisma = {
       alertSession: {
         findFirst: jest.fn<
@@ -148,15 +173,21 @@ describe('EmergencyDispatchService', () => {
         create: jest.fn<Promise<AlertEvent>, [AlertEventCreateArgs]>(),
       },
     };
+    messagingProvider = {
+      sendSms: jest.fn<
+        ReturnType<MessagingProviderService['sendSms']>,
+        Parameters<MessagingProviderService['sendSms']>
+      >(),
+    };
     prisma.alertEvent.create.mockResolvedValue(baseEvent());
-    service = new EmergencyDispatchService(prisma as unknown as PrismaService);
+    messagingProvider.sendSms.mockResolvedValue(failedDelivery());
+    service = new EmergencyDispatchService(
+      prisma as unknown as PrismaService,
+      messagingProvider as unknown as MessagingProviderService,
+    );
   });
 
-  afterEach(() => {
-    process.env = originalEnv;
-  });
-
-  it('creates failed dispatch attempts when delivery provider is not configured', async () => {
+  it('creates failed dispatch attempts when the SMS provider fails safely', async () => {
     prisma.alertSession.findFirst.mockResolvedValue(baseSession());
     prisma.emergencyContact.findMany.mockResolvedValue([
       baseContact({ id: 'contact-low', name: 'Bea', priority: 1 }),
@@ -179,6 +210,10 @@ describe('EmergencyDispatchService', () => {
       where: { userId: 'user-id', enabled: true },
       orderBy: [{ priority: 'asc' }, { createdAt: 'asc' }],
     });
+    expect(messagingProvider.sendSms).toHaveBeenNthCalledWith(1, {
+      to: '+5585999999999',
+      body: 'Ana may be in danger and needs help. Approximate location: -3.732, -38.527. Please try to contact her and call local emergency services if needed.',
+    });
     expect(prisma.alertEvent.create).toHaveBeenCalledTimes(2);
     expect(prisma.alertEvent.create).toHaveBeenNthCalledWith(1, {
       data: {
@@ -190,8 +225,8 @@ describe('EmergencyDispatchService', () => {
           contactId: 'contact-low',
           contactPriority: 1,
           deliveryChannel: 'sms',
-          provider: 'not_configured',
-          reason: 'delivery_provider_not_configured',
+          provider: 'unconfigured',
+          reason: 'sms_provider_not_configured',
           status: 'failed',
           message:
             'Ana may be in danger and needs help. Approximate location: -3.732, -38.527. Please try to contact her and call local emergency services if needed.',
@@ -205,14 +240,15 @@ describe('EmergencyDispatchService', () => {
       contactName: 'Bea',
       maskedPhone: '*********9999',
       status: 'failed',
-      reason: 'delivery_provider_not_configured',
+      provider: 'unconfigured',
+      reason: 'sms_provider_not_configured',
     });
   });
 
-  it('records a notified event when mock dispatch mode is enabled', async () => {
-    process.env.EMERGENCY_CONTACT_DISPATCH_MODE = 'mock';
+  it('records a notified event when the SMS provider reports success', async () => {
     prisma.alertSession.findFirst.mockResolvedValue(baseSession());
     prisma.emergencyContact.findMany.mockResolvedValue([baseContact()]);
+    messagingProvider.sendSms.mockResolvedValue(sentDelivery());
 
     const result = await service.dispatchCriticalAlert('user-id', 'session-id');
 
@@ -227,6 +263,7 @@ describe('EmergencyDispatchService', () => {
           contactPriority: 0,
           deliveryChannel: 'sms',
           provider: 'mock',
+          providerMessageId: 'mock-message-id',
           status: 'sent',
           message:
             'Ana may be in danger and needs help. Approximate location: -3.732, -38.527. Please try to contact her and call local emergency services if needed.',
@@ -234,7 +271,12 @@ describe('EmergencyDispatchService', () => {
       },
     });
     expect(result.providerConfigured).toBe(true);
-    expect(result.attempts[0]?.eventType).toBe(AlertEventType.CONTACT_NOTIFIED);
+    expect(result.attempts[0]).toMatchObject({
+      eventType: AlertEventType.CONTACT_NOTIFIED,
+      provider: 'mock',
+      providerMessageId: 'mock-message-id',
+      status: 'sent',
+    });
   });
 
   it('records a failed event when there are no active contacts', async () => {

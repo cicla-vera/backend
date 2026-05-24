@@ -78,3 +78,7 @@ Para o MVP de evidências, crie um bucket privado no Supabase Storage chamado `v
 O backend usa `SUPABASE_SERVICE_ROLE_KEY` apenas no servidor para upload/download interno. Não exponha essa chave no mobile, no frontend, em logs ou em commits.
 
 Evidências removidas pelo app são ocultadas da visão da usuária, mas o arquivo no Storage não é apagado imediatamente. O backend marca `hiddenFromUserAt` e agenda a retenção com `retentionUntil`; a exclusão definitiva via `deletedAt` fica preparada para um job administrativo futuro.
+
+## SMS de emergência
+
+O envio de SMS usa `EMERGENCY_SMS_PROVIDER=mock` por padrão em desenvolvimento/testes, sem chamada externa. Para envio real, configure `EMERGENCY_SMS_PROVIDER=twilio`, `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN` e `TWILIO_FROM_PHONE_NUMBER`; tokens nunca devem aparecer em logs, respostas ou commits.
