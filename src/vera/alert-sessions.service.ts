@@ -10,9 +10,11 @@ import {
   AlertTrigger,
   type AlertEvent,
   type AlertSession,
+  type SafetyLocation,
 } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CloseAlertSessionDto } from './dto/close-alert-session.dto';
+import { StartLocationAlertSessionDto } from './dto/start-location-alert-session.dto';
 import { StartManualAlertSessionDto } from './dto/start-manual-alert-session.dto';
 
 type AlertSessionWithEvents = AlertSession & {
@@ -55,6 +57,63 @@ export class AlertSessionsService {
             latitude: dto.initialLatitude,
             longitude: dto.initialLongitude,
           },
+        },
+      },
+      include: this.withOrderedEvents(),
+    });
+
+    return this.toResponse(session, false);
+  }
+
+  async startLocation(
+    userId: string,
+    dto: StartLocationAlertSessionDto,
+  ): Promise<AlertSessionResponse> {
+    const safetyLocation = await this.findActiveSafetyLocation(
+      userId,
+      dto.safetyLocationId,
+    );
+    const activeSession = await this.findActiveRaw(userId);
+
+    if (activeSession) {
+      return this.toResponse(activeSession, true);
+    }
+
+    const session = await this.prisma.alertSession.create({
+      data: {
+        userId,
+        safetyLocationId: safetyLocation.id,
+        trigger: AlertTrigger.LOCATION,
+        level: AlertLevel.NORMAL,
+        initialLatitude: dto.currentLatitude,
+        initialLongitude: dto.currentLongitude,
+        events: {
+          create: [
+            {
+              userId,
+              type: AlertEventType.SESSION_STARTED,
+              message: dto.message,
+              metadata: {
+                source: 'location',
+                safetyLocationId: safetyLocation.id,
+              },
+              latitude: dto.currentLatitude,
+              longitude: dto.currentLongitude,
+            },
+            {
+              userId,
+              type: AlertEventType.LOCATION_ENTERED,
+              message: dto.message,
+              metadata: {
+                safetyLocationId: safetyLocation.id,
+                safetyLocationName: safetyLocation.name,
+                safetyLocationType: safetyLocation.type,
+                radiusMeters: safetyLocation.radiusMeters,
+              },
+              latitude: dto.currentLatitude,
+              longitude: dto.currentLongitude,
+            },
+          ],
         },
       },
       include: this.withOrderedEvents(),
@@ -137,6 +196,25 @@ export class AlertSessionsService {
     }
 
     return session;
+  }
+
+  private async findActiveSafetyLocation(
+    userId: string,
+    id: string,
+  ): Promise<SafetyLocation> {
+    const safetyLocation = await this.prisma.safetyLocation.findFirst({
+      where: {
+        id,
+        userId,
+        enabled: true,
+      },
+    });
+
+    if (!safetyLocation) {
+      throw new NotFoundException('Active safety location not found');
+    }
+
+    return safetyLocation;
   }
 
   private validateCoordinatePair(latitude?: number, longitude?: number): void {
