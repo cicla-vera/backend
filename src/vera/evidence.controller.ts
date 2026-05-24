@@ -36,4 +36,13 @@ export class EvidenceController {
   ) {
     return this.evidenceService.upload(user.sub, alertSessionId, dto, file);
   }
+
+  @Post(':id/verify')
+  verify(
+    @CurrentUser() user: { sub: string },
+    @Param('alertSessionId') alertSessionId: string,
+    @Param('id') id: string,
+  ) {
+    return this.evidenceService.verify(user.sub, alertSessionId, id);
+  }
 }

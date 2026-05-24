@@ -1,5 +1,7 @@
 import { BadRequestException, NotFoundException } from '@nestjs/common';
 import {
+  EvidenceAuditAction,
+  type EvidenceAuditEvent,
   AlertEventType,
   AlertLevel,
   AlertStatus,
@@ -9,6 +11,7 @@ import {
   type AlertSession,
   type EvidenceRecord,
 } from '@prisma/client';
+import { createHash } from 'node:crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { EvidenceService, type UploadedEvidenceFile } from './evidence.service';
 import { EvidenceStorageService } from './evidence-storage.service';
@@ -26,7 +29,18 @@ type EvidenceRecordCreateArgs = {
     mimeType: string;
     originalName: string | null;
     storagePath: string;
+    contentHash: string;
+    hashAlgorithm: string;
+    hashedAt: Date;
     metadata?: Record<string, string | number | boolean | null>;
+  };
+};
+
+type EvidenceRecordFindFirstArgs = {
+  where: {
+    id: string;
+    userId: string;
+    alertSessionId: string;
   };
 };
 
@@ -41,13 +55,45 @@ type AlertEventCreateArgs = {
       evidenceType: EvidenceType;
       mimeType: string;
       size: number;
+      contentHash: string;
+      hashAlgorithm: string;
     };
+  };
+};
+
+type EvidenceAuditEventFindFirstArgs = {
+  where: { evidenceRecordId: string };
+  orderBy: [{ createdAt: 'desc' }, { id: 'desc' }];
+  select: { eventHash: true };
+};
+
+type EvidenceAuditEventCreateArgs = {
+  data: {
+    userId: string;
+    evidenceRecordId: string;
+    action: EvidenceAuditAction;
+    contentHash?: string;
+    hashAlgorithm: string;
+    previousEventHash?: string;
+    eventHash: string;
+    metadata?: Record<string, string | number | boolean | null>;
+    createdAt: Date;
   };
 };
 
 type TransactionClientMock = {
   evidenceRecord: {
     create: jest.Mock<Promise<EvidenceRecord>, [EvidenceRecordCreateArgs]>;
+  };
+  evidenceAuditEvent: {
+    findFirst: jest.Mock<
+      Promise<{ eventHash: string } | null>,
+      [EvidenceAuditEventFindFirstArgs]
+    >;
+    create: jest.Mock<
+      Promise<EvidenceAuditEvent>,
+      [EvidenceAuditEventCreateArgs]
+    >;
   };
   alertEvent: {
     create: jest.Mock<Promise<AlertEvent>, [AlertEventCreateArgs]>;
@@ -65,6 +111,22 @@ type PrismaMock = {
       [AlertSessionFindFirstArgs]
     >;
   };
+  evidenceRecord: {
+    findFirst: jest.Mock<
+      Promise<EvidenceRecord | null>,
+      [EvidenceRecordFindFirstArgs]
+    >;
+  };
+  evidenceAuditEvent: {
+    findFirst: jest.Mock<
+      Promise<{ eventHash: string } | null>,
+      [EvidenceAuditEventFindFirstArgs]
+    >;
+    create: jest.Mock<
+      Promise<EvidenceAuditEvent>,
+      [EvidenceAuditEventCreateArgs]
+    >;
+  };
   $transaction: jest.Mock<Promise<EvidenceRecord>, [TransactionCallback]>;
 };
 
@@ -73,7 +135,17 @@ type EvidenceStorageMock = {
     ReturnType<EvidenceStorageService['uploadEvidence']>,
     Parameters<EvidenceStorageService['uploadEvidence']>
   >;
+  downloadEvidence: jest.Mock<
+    ReturnType<EvidenceStorageService['downloadEvidence']>,
+    Parameters<EvidenceStorageService['downloadEvidence']>
+  >;
 };
+
+const hashBuffer = (buffer: Buffer): string =>
+  createHash('sha256').update(buffer).digest('hex');
+
+const audioBuffer = Buffer.from('audio-bytes');
+const audioHash = hashBuffer(audioBuffer);
 
 const baseSession = (overrides: Partial<AlertSession> = {}): AlertSession => ({
   id: 'session-id',
@@ -99,10 +171,29 @@ const baseEvidence = (
   userId: 'user-id',
   alertSessionId: 'session-id',
   type: EvidenceType.AUDIO,
-  size: Buffer.byteLength('audio-bytes'),
+  size: audioBuffer.byteLength,
   mimeType: 'audio/wav',
   originalName: 'audio.wav',
   storagePath: 'users/user-id/alert-sessions/session-id/audio.wav',
+  contentHash: audioHash,
+  hashAlgorithm: 'SHA-256',
+  hashedAt: new Date('2026-05-24T00:00:00.000Z'),
+  metadata: null,
+  createdAt: new Date('2026-05-24T00:00:00.000Z'),
+  ...overrides,
+});
+
+const baseAuditEvent = (
+  overrides: Partial<EvidenceAuditEvent> = {},
+): EvidenceAuditEvent => ({
+  id: 'audit-event-id',
+  userId: 'user-id',
+  evidenceRecordId: 'evidence-id',
+  action: EvidenceAuditAction.UPLOADED,
+  contentHash: audioHash,
+  hashAlgorithm: 'SHA-256',
+  previousEventHash: null,
+  eventHash: 'a'.repeat(64),
   metadata: null,
   createdAt: new Date('2026-05-24T00:00:00.000Z'),
   ...overrides,
@@ -124,12 +215,19 @@ const baseEvent = (overrides: Partial<AlertEvent> = {}): AlertEvent => ({
 const audioFile = (
   overrides: Partial<UploadedEvidenceFile> = {},
 ): UploadedEvidenceFile => ({
-  buffer: Buffer.from('audio-bytes'),
+  buffer: audioBuffer,
   originalname: 'audio.wav',
   mimetype: 'audio/wav',
-  size: Buffer.byteLength('audio-bytes'),
+  size: audioBuffer.byteLength,
   ...overrides,
 });
+
+const toArrayBuffer = (buffer: Buffer): ArrayBuffer => {
+  return buffer.buffer.slice(
+    buffer.byteOffset,
+    buffer.byteOffset + buffer.byteLength,
+  );
+};
 
 describe('EvidenceService', () => {
   let service: EvidenceService;
@@ -142,6 +240,16 @@ describe('EvidenceService', () => {
       evidenceRecord: {
         create: jest.fn<Promise<EvidenceRecord>, [EvidenceRecordCreateArgs]>(),
       },
+      evidenceAuditEvent: {
+        findFirst: jest.fn<
+          Promise<{ eventHash: string } | null>,
+          [EvidenceAuditEventFindFirstArgs]
+        >(),
+        create: jest.fn<
+          Promise<EvidenceAuditEvent>,
+          [EvidenceAuditEventCreateArgs]
+        >(),
+      },
       alertEvent: {
         create: jest.fn<Promise<AlertEvent>, [AlertEventCreateArgs]>(),
       },
@@ -153,12 +261,32 @@ describe('EvidenceService', () => {
           [AlertSessionFindFirstArgs]
         >(),
       },
+      evidenceRecord: {
+        findFirst: jest.fn<
+          Promise<EvidenceRecord | null>,
+          [EvidenceRecordFindFirstArgs]
+        >(),
+      },
+      evidenceAuditEvent: {
+        findFirst: jest.fn<
+          Promise<{ eventHash: string } | null>,
+          [EvidenceAuditEventFindFirstArgs]
+        >(),
+        create: jest.fn<
+          Promise<EvidenceAuditEvent>,
+          [EvidenceAuditEventCreateArgs]
+        >(),
+      },
       $transaction: jest.fn<Promise<EvidenceRecord>, [TransactionCallback]>(),
     };
     evidenceStorage = {
       uploadEvidence: jest.fn<
         ReturnType<EvidenceStorageService['uploadEvidence']>,
         Parameters<EvidenceStorageService['uploadEvidence']>
+      >(),
+      downloadEvidence: jest.fn<
+        ReturnType<EvidenceStorageService['downloadEvidence']>,
+        Parameters<EvidenceStorageService['downloadEvidence']>
       >(),
     };
 
@@ -173,17 +301,59 @@ describe('EvidenceService', () => {
           mimeType: data.mimeType,
           originalName: data.originalName,
           storagePath: data.storagePath,
+          contentHash: data.contentHash,
+          hashAlgorithm: data.hashAlgorithm,
+          hashedAt: data.hashedAt,
           metadata: data.metadata ?? null,
         }),
       );
     });
     tx.alertEvent.create.mockResolvedValue(baseEvent());
+    tx.evidenceAuditEvent.findFirst.mockResolvedValue(null);
+    tx.evidenceAuditEvent.create.mockImplementation(({ data }) => {
+      return Promise.resolve(
+        baseAuditEvent({
+          userId: data.userId,
+          evidenceRecordId: data.evidenceRecordId,
+          action: data.action,
+          contentHash: data.contentHash ?? null,
+          hashAlgorithm: data.hashAlgorithm,
+          previousEventHash: data.previousEventHash ?? null,
+          eventHash: data.eventHash,
+          metadata: data.metadata ?? null,
+          createdAt: data.createdAt,
+        }),
+      );
+    });
+    prisma.evidenceAuditEvent.findFirst.mockResolvedValue(null);
+    prisma.evidenceAuditEvent.create.mockImplementation(({ data }) => {
+      return Promise.resolve(
+        baseAuditEvent({
+          userId: data.userId,
+          evidenceRecordId: data.evidenceRecordId,
+          action: data.action,
+          contentHash: data.contentHash ?? null,
+          hashAlgorithm: data.hashAlgorithm,
+          previousEventHash: data.previousEventHash ?? null,
+          eventHash: data.eventHash,
+          metadata: data.metadata ?? null,
+          createdAt: data.createdAt,
+        }),
+      );
+    });
     evidenceStorage.uploadEvidence.mockResolvedValue({
       bucket: 'vera-evidence',
       path: 'users/user-id/alert-sessions/session-id/audio.wav',
       contentType: 'audio/wav',
-      size: Buffer.byteLength('audio-bytes'),
+      size: audioBuffer.byteLength,
       uploadedAt: new Date('2026-05-24T00:00:00.000Z'),
+    });
+    evidenceStorage.downloadEvidence.mockResolvedValue({
+      bucket: 'vera-evidence',
+      path: 'users/user-id/alert-sessions/session-id/audio.wav',
+      contentType: 'audio/wav',
+      size: audioBuffer.byteLength,
+      body: toArrayBuffer(audioBuffer),
     });
 
     service = new EvidenceService(
@@ -213,7 +383,7 @@ describe('EvidenceService', () => {
       alertSessionId: 'session-id',
       fileName: 'audio.wav',
       contentType: 'audio/wav',
-      body: Buffer.from('audio-bytes'),
+      body: audioBuffer,
     });
 
     const createArgs = tx.evidenceRecord.create.mock.calls[0]?.[0];
@@ -226,12 +396,15 @@ describe('EvidenceService', () => {
       userId: 'user-id',
       alertSessionId: 'session-id',
       type: EvidenceType.AUDIO,
-      size: Buffer.byteLength('audio-bytes'),
+      size: audioBuffer.byteLength,
       mimeType: 'audio/wav',
       originalName: 'audio.wav',
       storagePath: 'users/user-id/alert-sessions/session-id/audio.wav',
+      contentHash: audioHash,
+      hashAlgorithm: 'SHA-256',
       metadata: { source: 'microphone', confidence: 0.91 },
     });
+    expect(createArgs.data.hashedAt).toBeInstanceOf(Date);
     expect(tx.alertEvent.create).toHaveBeenCalledWith({
       data: {
         userId: 'user-id',
@@ -242,12 +415,108 @@ describe('EvidenceService', () => {
           evidenceRecordId: 'evidence-id',
           evidenceType: EvidenceType.AUDIO,
           mimeType: 'audio/wav',
-          size: Buffer.byteLength('audio-bytes'),
+          size: audioBuffer.byteLength,
+          contentHash: audioHash,
+          hashAlgorithm: 'SHA-256',
         },
       },
     });
+    expect(tx.evidenceAuditEvent.findFirst).toHaveBeenCalledWith({
+      where: { evidenceRecordId: 'evidence-id' },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      select: { eventHash: true },
+    });
+
+    const auditCreateArgs = tx.evidenceAuditEvent.create.mock.calls[0]?.[0];
+
+    if (!auditCreateArgs) {
+      throw new Error('Expected evidence audit event create call');
+    }
+
+    expect(auditCreateArgs.data).toMatchObject({
+      userId: 'user-id',
+      evidenceRecordId: 'evidence-id',
+      action: EvidenceAuditAction.UPLOADED,
+      contentHash: audioHash,
+      hashAlgorithm: 'SHA-256',
+      metadata: {
+        alertSessionId: 'session-id',
+        evidenceType: EvidenceType.AUDIO,
+        mimeType: 'audio/wav',
+        size: audioBuffer.byteLength,
+      },
+    });
+    expect(auditCreateArgs.data.eventHash).toHaveLength(64);
     expect(result).not.toHaveProperty('storagePath');
+    expect(result.contentHash).toBe(audioHash);
+    expect(result.hashAlgorithm).toBe('SHA-256');
     expect(result.id).toBe('evidence-id');
+  });
+
+  it('verifies a stored evidence file against its saved hash', async () => {
+    prisma.evidenceRecord.findFirst.mockResolvedValue(baseEvidence());
+    prisma.evidenceAuditEvent.findFirst.mockResolvedValue({
+      eventHash: 'b'.repeat(64),
+    });
+
+    const result = await service.verify('user-id', 'session-id', 'evidence-id');
+
+    expect(prisma.evidenceRecord.findFirst).toHaveBeenCalledWith({
+      where: {
+        id: 'evidence-id',
+        userId: 'user-id',
+        alertSessionId: 'session-id',
+      },
+    });
+    expect(evidenceStorage.downloadEvidence).toHaveBeenCalledWith(
+      'users/user-id/alert-sessions/session-id/audio.wav',
+    );
+    expect(result).toMatchObject({
+      evidenceRecordId: 'evidence-id',
+      hashAlgorithm: 'SHA-256',
+      storedHash: audioHash,
+      calculatedHash: audioHash,
+      matches: true,
+    });
+
+    const auditCreateArgs = prisma.evidenceAuditEvent.create.mock.calls[0]?.[0];
+
+    if (!auditCreateArgs) {
+      throw new Error('Expected evidence verification audit event');
+    }
+
+    expect(auditCreateArgs.data).toMatchObject({
+      userId: 'user-id',
+      evidenceRecordId: 'evidence-id',
+      action: EvidenceAuditAction.HASH_VERIFIED,
+      contentHash: audioHash,
+      hashAlgorithm: 'SHA-256',
+      previousEventHash: 'b'.repeat(64),
+      metadata: {
+        alertSessionId: 'session-id',
+        matches: true,
+        storedHash: audioHash,
+      },
+    });
+    expect(auditCreateArgs.data.eventHash).toHaveLength(64);
+  });
+
+  it('returns a failed verification result when the storage hash differs', async () => {
+    prisma.evidenceRecord.findFirst.mockResolvedValue(baseEvidence());
+    evidenceStorage.downloadEvidence.mockResolvedValue({
+      bucket: 'vera-evidence',
+      path: 'users/user-id/alert-sessions/session-id/audio.wav',
+      contentType: 'audio/wav',
+      size: Buffer.byteLength('tampered'),
+      body: toArrayBuffer(Buffer.from('tampered')),
+    });
+
+    const result = await service.verify('user-id', 'session-id', 'evidence-id');
+
+    expect(result.matches).toBe(false);
+    expect(result.storedHash).toBe(audioHash);
+    expect(result.calculatedHash).toBe(hashBuffer(Buffer.from('tampered')));
+    expect(prisma.evidenceAuditEvent.create).toHaveBeenCalledTimes(1);
   });
 
   it('rejects evidence for sessions from another user', async () => {
