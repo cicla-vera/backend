@@ -36,6 +36,7 @@ model User {
   safetyLocations        SafetyLocation[]
   alertSessions          AlertSession[]
   alertEvents            AlertEvent[]
+  evidenceRecords        EvidenceRecord[]
 }
 
 model Profile {
@@ -303,6 +304,13 @@ enum AlertEventType {
   SESSION_CLOSED
 }
 
+enum EvidenceType {
+  AUDIO
+  VIDEO
+  IMAGE
+  FILE
+}
+
 model SafetyProfile {
   id                           String    @id @default(uuid())
   userId                       String    @unique
@@ -354,22 +362,23 @@ model SafetyLocation {
 }
 
 model AlertSession {
-  id                  String          @id @default(uuid())
+  id                  String           @id @default(uuid())
   userId              String
-  user                User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user                User             @relation(fields: [userId], references: [id], onDelete: Cascade)
   safetyLocationId    String?
-  safetyLocation      SafetyLocation? @relation(fields: [safetyLocationId], references: [id], onDelete: SetNull)
+  safetyLocation      SafetyLocation?  @relation(fields: [safetyLocationId], references: [id], onDelete: SetNull)
   trigger             AlertTrigger
-  status              AlertStatus     @default(ACTIVE)
-  level               AlertLevel      @default(NORMAL)
-  startedAt           DateTime        @default(now())
+  status              AlertStatus      @default(ACTIVE)
+  level               AlertLevel       @default(NORMAL)
+  startedAt           DateTime         @default(now())
   endedAt             DateTime?
   criticalEscalatedAt DateTime?
   initialLatitude     Float?
   initialLongitude    Float?
-  createdAt           DateTime        @default(now())
-  updatedAt           DateTime        @updatedAt
+  createdAt           DateTime         @default(now())
+  updatedAt           DateTime         @updatedAt
   events              AlertEvent[]
+  evidenceRecords     EvidenceRecord[]
 
   @@index([userId, status])
   @@index([userId, level])
@@ -392,5 +401,24 @@ model AlertEvent {
 
   @@index([alertSessionId, createdAt])
   @@index([userId, createdAt])
+  @@index([type])
+}
+
+model EvidenceRecord {
+  id             String       @id @default(uuid())
+  userId         String
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  alertSessionId String
+  alertSession   AlertSession @relation(fields: [alertSessionId], references: [id], onDelete: Cascade)
+  type           EvidenceType
+  size           Int
+  mimeType       String
+  originalName   String?
+  storagePath    String       @unique
+  metadata       Json?
+  createdAt      DateTime     @default(now())
+
+  @@index([userId, createdAt])
+  @@index([alertSessionId, createdAt])
   @@index([type])
 }
