@@ -43,6 +43,9 @@ type EvidenceRecordResponse = {
   contentHash: string;
   hashAlgorithm: string;
   hashedAt: Date;
+  hiddenFromUserAt: Date | null;
+  retentionUntil: Date | null;
+  deletedAt: Date | null;
   metadata: Prisma.JsonValue | null;
   createdAt: Date;
 };
@@ -70,6 +73,7 @@ const MAX_METADATA_STRING_LENGTH = 240;
 const MAX_ORIGINAL_NAME_LENGTH = 240;
 const HASH_ALGORITHM = 'SHA-256';
 const NODE_HASH_ALGORITHM = 'sha256';
+export const EVIDENCE_RETENTION_DAYS = 180;
 
 const FILE_MIME_TYPES = new Set([
   'application/json',
@@ -167,6 +171,68 @@ export class EvidenceService {
     return this.toResponse(record);
   }
 
+  async findAll(
+    userId: string,
+    alertSessionId: string,
+  ): Promise<EvidenceRecordResponse[]> {
+    await this.findOwnedSession(userId, alertSessionId);
+
+    const records = await this.prisma.evidenceRecord.findMany({
+      where: {
+        userId,
+        alertSessionId,
+        hiddenFromUserAt: null,
+        deletedAt: null,
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    return records.map((record) => this.toResponse(record));
+  }
+
+  async hideFromUser(
+    userId: string,
+    alertSessionId: string,
+    evidenceRecordId: string,
+  ): Promise<EvidenceRecordResponse> {
+    const evidenceRecord = await this.findOwnedEvidenceRecord(
+      userId,
+      alertSessionId,
+      evidenceRecordId,
+    );
+
+    if (evidenceRecord.hiddenFromUserAt) {
+      return this.toResponse(evidenceRecord);
+    }
+
+    const hiddenFromUserAt = new Date();
+    const retentionUntil = this.calculateRetentionUntil(hiddenFromUserAt);
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const record = await tx.evidenceRecord.update({
+        where: { id: evidenceRecord.id },
+        data: {
+          hiddenFromUserAt,
+          retentionUntil,
+        },
+      });
+
+      await this.createAuditEvent(tx, {
+        userId,
+        evidenceRecordId: record.id,
+        action: EvidenceAuditAction.HIDDEN_FROM_USER,
+        contentHash: record.contentHash,
+        metadata: {
+          alertSessionId,
+          retentionUntil: retentionUntil.toISOString(),
+        },
+      });
+
+      return record;
+    });
+
+    return this.toResponse(updated);
+  }
+
   async verify(
     userId: string,
     alertSessionId: string,
@@ -233,6 +299,7 @@ export class EvidenceService {
         id: evidenceRecordId,
         userId,
         alertSessionId,
+        deletedAt: null,
       },
     });
 
@@ -411,6 +478,15 @@ export class EvidenceService {
     return createHash(NODE_HASH_ALGORITHM).update(body).digest('hex');
   }
 
+  private calculateRetentionUntil(hiddenFromUserAt: Date): Date {
+    const retentionUntil = new Date(hiddenFromUserAt);
+    retentionUntil.setUTCDate(
+      retentionUntil.getUTCDate() + EVIDENCE_RETENTION_DAYS,
+    );
+
+    return retentionUntil;
+  }
+
   private calculateAuditEventHash(
     input: CreateAuditEventInput & {
       previousEventHash?: string;
@@ -465,6 +541,9 @@ export class EvidenceService {
       contentHash: record.contentHash,
       hashAlgorithm: record.hashAlgorithm,
       hashedAt: record.hashedAt,
+      hiddenFromUserAt: record.hiddenFromUserAt,
+      retentionUntil: record.retentionUntil,
+      deletedAt: record.deletedAt,
       metadata: record.metadata,
       createdAt: record.createdAt,
     };

@@ -315,6 +315,7 @@ enum EvidenceType {
 enum EvidenceAuditAction {
   UPLOADED
   HASH_VERIFIED
+  HIDDEN_FROM_USER
 }
 
 model SafetyProfile {
@@ -411,26 +412,32 @@ model AlertEvent {
 }
 
 model EvidenceRecord {
-  id             String               @id @default(uuid())
-  userId         String
-  user           User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
-  alertSessionId String
-  alertSession   AlertSession         @relation(fields: [alertSessionId], references: [id], onDelete: Cascade)
-  type           EvidenceType
-  size           Int
-  mimeType       String
-  originalName   String?
-  storagePath    String               @unique
-  contentHash    String
-  hashAlgorithm  String               @default("SHA-256")
-  hashedAt       DateTime             @default(now())
-  metadata       Json?
-  createdAt      DateTime             @default(now())
-  auditEvents    EvidenceAuditEvent[]
+  id               String               @id @default(uuid())
+  userId           String
+  user             User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  alertSessionId   String
+  alertSession     AlertSession         @relation(fields: [alertSessionId], references: [id], onDelete: Cascade)
+  type             EvidenceType
+  size             Int
+  mimeType         String
+  originalName     String?
+  storagePath      String               @unique
+  contentHash      String
+  hashAlgorithm    String               @default("SHA-256")
+  hashedAt         DateTime             @default(now())
+  hiddenFromUserAt DateTime?
+  retentionUntil   DateTime?
+  deletedAt        DateTime?
+  metadata         Json?
+  createdAt        DateTime             @default(now())
+  auditEvents      EvidenceAuditEvent[]
 
   @@index([userId, createdAt])
+  @@index([userId, hiddenFromUserAt])
   @@index([alertSessionId, createdAt])
   @@index([contentHash])
+  @@index([retentionUntil])
+  @@index([deletedAt])
   @@index([type])
 }
 

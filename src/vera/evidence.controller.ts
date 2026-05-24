@@ -1,6 +1,8 @@
 import {
   Body,
   Controller,
+  Delete,
+  Get,
   Param,
   Post,
   UploadedFile,
@@ -21,6 +23,14 @@ import {
 @Controller('vera/alert-sessions/:alertSessionId/evidence')
 export class EvidenceController {
   constructor(private readonly evidenceService: EvidenceService) {}
+
+  @Get()
+  findAll(
+    @CurrentUser() user: { sub: string },
+    @Param('alertSessionId') alertSessionId: string,
+  ) {
+    return this.evidenceService.findAll(user.sub, alertSessionId);
+  }
 
   @Post()
   @UseInterceptors(
@@ -44,5 +54,14 @@ export class EvidenceController {
     @Param('id') id: string,
   ) {
     return this.evidenceService.verify(user.sub, alertSessionId, id);
+  }
+
+  @Delete(':id')
+  hideFromUser(
+    @CurrentUser() user: { sub: string },
+    @Param('alertSessionId') alertSessionId: string,
+    @Param('id') id: string,
+  ) {
+    return this.evidenceService.hideFromUser(user.sub, alertSessionId, id);
   }
 }
