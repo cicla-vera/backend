@@ -82,3 +82,7 @@ Evidências removidas pelo app são ocultadas da visão da usuária, mas o arqui
 ## SMS de emergência
 
 O envio de SMS usa `EMERGENCY_SMS_PROVIDER=mock` por padrão em desenvolvimento/testes, sem chamada externa. Para envio real, configure `EMERGENCY_SMS_PROVIDER=twilio`, `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN` e `TWILIO_FROM_PHONE_NUMBER`; tokens nunca devem aparecer em logs, respostas ou commits.
+
+## Serviço de IA
+
+O backend conversa com o microsserviço Python/FastAPI por `AI_SERVICE_URL`. O cliente HTTP usa timeout configurável em `AI_SERVICE_TIMEOUT_MS` e traduz falhas externas em exceptions controladas, para que upload, alerta e mobile não dependam de erro bruto do serviço de IA.
