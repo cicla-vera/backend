@@ -6,6 +6,7 @@ import { AlertSessionsController } from './alert-sessions.controller';
 import { AlertSessionsService } from './alert-sessions.service';
 import { EmergencyContactsController } from './emergency-contacts.controller';
 import { EmergencyContactsService } from './emergency-contacts.service';
+import { EvidenceStorageService } from './evidence-storage.service';
 import { SafetyLocationsController } from './safety-locations.controller';
 import { SafetyLocationsService } from './safety-locations.service';
 import { VeraPinController } from './vera-pin.controller';
@@ -30,6 +31,7 @@ import { VeraService } from './vera.service';
     VeraPinService,
     AlertSessionsService,
     AlertEventsService,
+    EvidenceStorageService,
   ],
   exports: [
     VeraService,
@@ -38,6 +40,7 @@ import { VeraService } from './vera.service';
     VeraPinService,
     AlertSessionsService,
     AlertEventsService,
+    EvidenceStorageService,
   ],
 })
 export class VeraModule {}
