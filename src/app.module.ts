@@ -19,6 +19,7 @@ import { IntercourseModule } from './intercourse/intercourse.module';
 import { MedicationsModule } from './medications/medications.module';
 import { DataImportModule } from './data-import/data-import.module';
 import { NotificationsModule } from './notifications/notifications.module';
+import { VeraModule } from './vera/vera.module';
 
 @Module({
   imports: [
@@ -42,6 +43,7 @@ import { NotificationsModule } from './notifications/notifications.module';
     MedicationsModule,
     DataImportModule,
     NotificationsModule,
+    VeraModule,
   ],
   controllers: [AppController],
   providers: [AppService],
