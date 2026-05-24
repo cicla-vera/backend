@@ -31,6 +31,11 @@ model User {
   notificationSettings   NotificationSettings?
   notificationDevices    NotificationDevice[]
   notificationDeliveries NotificationDelivery[]
+  safetyProfile          SafetyProfile?
+  emergencyContacts      EmergencyContact[]
+  safetyLocations        SafetyLocation[]
+  alertSessions          AlertSession[]
+  alertEvents            AlertEvent[]
 }
 
 model Profile {
@@ -177,14 +182,14 @@ enum ActivityIntensity {
 }
 
 model ActivityEntry {
-  id          String            @id @default(uuid())
-  userId      String
-  user        User              @relation(fields: [userId], references: [id], onDelete: Cascade)
-  type        ActivityType
-  intensity   ActivityIntensity
-  duration    Int
-  date        DateTime
-  createdAt   DateTime          @default(now())
+  id        String            @id @default(uuid())
+  userId    String
+  user      User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      ActivityType
+  intensity ActivityIntensity
+  duration  Int
+  date      DateTime
+  createdAt DateTime          @default(now())
 }
 
 enum SleepQuality {
@@ -205,12 +210,12 @@ model SleepEntry {
 }
 
 model IntercourseEntry {
-  id            String   @id @default(uuid())
-  userId        String
-  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  protected     Boolean
-  date          DateTime
-  createdAt     DateTime @default(now())
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  protected Boolean
+  date      DateTime
+  createdAt DateTime @default(now())
 }
 
 model MedicationEntry {
@@ -262,4 +267,121 @@ model NotificationDelivery {
 
   @@unique([userId, type, referenceDate])
   @@index([userId, referenceDate])
+}
+
+// ─── VERA SAFETY LAYER ──────────────────────────────────────────────────────
+
+enum SafetyLocationType {
+  TRUSTED
+  RISK
+}
+
+enum AlertTrigger {
+  MANUAL
+  LOCATION
+}
+
+enum AlertStatus {
+  ACTIVE
+  RESOLVED
+  CANCELLED
+}
+
+enum AlertEventType {
+  SESSION_STARTED
+  LOCATION_ENTERED
+  EVIDENCE_UPLOADED
+  AI_ANALYSIS_COMPLETED
+  CONTACT_NOTIFIED
+  CONTACT_NOTIFICATION_FAILED
+  SESSION_CLOSED
+}
+
+model SafetyProfile {
+  id                           String    @id @default(uuid())
+  userId                       String    @unique
+  user                         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  veraEnabled                  Boolean   @default(false)
+  consentAccepted              Boolean   @default(false)
+  consentAcceptedAt            DateTime?
+  pinHash                      String?
+  pinUpdatedAt                 DateTime?
+  biometricUnlockEnabled       Boolean   @default(false)
+  discreetNotificationsEnabled Boolean   @default(true)
+  monitoringEnabled            Boolean   @default(false)
+  createdAt                    DateTime  @default(now())
+  updatedAt                    DateTime  @updatedAt
+}
+
+model EmergencyContact {
+  id           String   @id @default(uuid())
+  userId       String
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name         String
+  phone        String
+  relationship String?
+  priority     Int      @default(0)
+  enabled      Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([userId, enabled])
+  @@index([userId, priority])
+}
+
+model SafetyLocation {
+  id            String             @id @default(uuid())
+  userId        String
+  user          User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name          String
+  latitude      Float
+  longitude     Float
+  radiusMeters  Int
+  type          SafetyLocationType @default(RISK)
+  enabled       Boolean            @default(true)
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
+  alertSessions AlertSession[]
+
+  @@index([userId, enabled])
+  @@index([userId, type])
+}
+
+model AlertSession {
+  id               String          @id @default(uuid())
+  userId           String
+  user             User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  safetyLocationId String?
+  safetyLocation   SafetyLocation? @relation(fields: [safetyLocationId], references: [id], onDelete: SetNull)
+  trigger          AlertTrigger
+  status           AlertStatus     @default(ACTIVE)
+  startedAt        DateTime        @default(now())
+  endedAt          DateTime?
+  initialLatitude  Float?
+  initialLongitude Float?
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
+  events           AlertEvent[]
+
+  @@index([userId, status])
+  @@index([userId, startedAt])
+  @@index([safetyLocationId])
+}
+
+model AlertEvent {
+  id             String         @id @default(uuid())
+  userId         String
+  user           User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  alertSessionId String
+  alertSession   AlertSession   @relation(fields: [alertSessionId], references: [id], onDelete: Cascade)
+  type           AlertEventType
+  message        String?
+  metadata       Json?
+  latitude       Float?
+  longitude      Float?
+  createdAt      DateTime       @default(now())
+
+  @@index([alertSessionId, createdAt])
+  @@index([userId, createdAt])
+  @@index([type])
 }
