@@ -287,11 +287,17 @@ enum AlertStatus {
   CANCELLED
 }
 
+enum AlertLevel {
+  NORMAL
+  CRITICAL
+}
+
 enum AlertEventType {
   SESSION_STARTED
   LOCATION_ENTERED
   EVIDENCE_UPLOADED
   AI_ANALYSIS_COMPLETED
+  ALERT_ESCALATED
   CONTACT_NOTIFIED
   CONTACT_NOTIFICATION_FAILED
   SESSION_CLOSED
@@ -348,22 +354,25 @@ model SafetyLocation {
 }
 
 model AlertSession {
-  id               String          @id @default(uuid())
-  userId           String
-  user             User            @relation(fields: [userId], references: [id], onDelete: Cascade)
-  safetyLocationId String?
-  safetyLocation   SafetyLocation? @relation(fields: [safetyLocationId], references: [id], onDelete: SetNull)
-  trigger          AlertTrigger
-  status           AlertStatus     @default(ACTIVE)
-  startedAt        DateTime        @default(now())
-  endedAt          DateTime?
-  initialLatitude  Float?
-  initialLongitude Float?
-  createdAt        DateTime        @default(now())
-  updatedAt        DateTime        @updatedAt
-  events           AlertEvent[]
+  id                  String          @id @default(uuid())
+  userId              String
+  user                User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  safetyLocationId    String?
+  safetyLocation      SafetyLocation? @relation(fields: [safetyLocationId], references: [id], onDelete: SetNull)
+  trigger             AlertTrigger
+  status              AlertStatus     @default(ACTIVE)
+  level               AlertLevel      @default(NORMAL)
+  startedAt           DateTime        @default(now())
+  endedAt             DateTime?
+  criticalEscalatedAt DateTime?
+  initialLatitude     Float?
+  initialLongitude    Float?
+  createdAt           DateTime        @default(now())
+  updatedAt           DateTime        @updatedAt
+  events              AlertEvent[]
 
   @@index([userId, status])
+  @@index([userId, level])
   @@index([userId, startedAt])
   @@index([safetyLocationId])
 }
