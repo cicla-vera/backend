@@ -1,0 +1,39 @@
+import {
+  Body,
+  Controller,
+  Param,
+  Post,
+  UploadedFile,
+  UseGuards,
+  UseInterceptors,
+} from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { CurrentUser } from '../auth/decorators/current-user.decorator';
+import { JwtGuard } from '../auth/guards/jwt.guard';
+import { UploadEvidenceDto } from './dto/upload-evidence.dto';
+import {
+  EvidenceService,
+  MAX_EVIDENCE_UPLOAD_BYTES,
+  type UploadedEvidenceFile,
+} from './evidence.service';
+
+@UseGuards(JwtGuard)
+@Controller('vera/alert-sessions/:alertSessionId/evidence')
+export class EvidenceController {
+  constructor(private readonly evidenceService: EvidenceService) {}
+
+  @Post()
+  @UseInterceptors(
+    FileInterceptor('file', {
+      limits: { fileSize: MAX_EVIDENCE_UPLOAD_BYTES },
+    }),
+  )
+  upload(
+    @CurrentUser() user: { sub: string },
+    @Param('alertSessionId') alertSessionId: string,
+    @Body() dto: UploadEvidenceDto,
+    @UploadedFile() file?: UploadedEvidenceFile,
+  ) {
+    return this.evidenceService.upload(user.sub, alertSessionId, dto, file);
+  }
+}
