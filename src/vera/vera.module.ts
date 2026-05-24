@@ -6,6 +6,7 @@ import { AlertSessionsController } from './alert-sessions.controller';
 import { AlertSessionsService } from './alert-sessions.service';
 import { EmergencyContactsController } from './emergency-contacts.controller';
 import { EmergencyContactsService } from './emergency-contacts.service';
+import { EmergencyDispatchService } from './emergency-dispatch.service';
 import { EvidenceController } from './evidence.controller';
 import { EvidenceService } from './evidence.service';
 import { EvidenceStorageService } from './evidence-storage.service';
@@ -34,6 +35,7 @@ import { VeraService } from './vera.service';
     VeraPinService,
     AlertSessionsService,
     AlertEventsService,
+    EmergencyDispatchService,
     EvidenceService,
     EvidenceStorageService,
   ],
@@ -44,6 +46,7 @@ import { VeraService } from './vera.service';
     VeraPinService,
     AlertSessionsService,
     AlertEventsService,
+    EmergencyDispatchService,
     EvidenceService,
     EvidenceStorageService,
   ],

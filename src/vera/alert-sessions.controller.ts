@@ -5,11 +5,15 @@ import { AlertSessionsService } from './alert-sessions.service';
 import { CloseAlertSessionDto } from './dto/close-alert-session.dto';
 import { StartLocationAlertSessionDto } from './dto/start-location-alert-session.dto';
 import { StartManualAlertSessionDto } from './dto/start-manual-alert-session.dto';
+import { EmergencyDispatchService } from './emergency-dispatch.service';
 
 @UseGuards(JwtGuard)
 @Controller('vera/alert-sessions')
 export class AlertSessionsController {
-  constructor(private readonly alertSessionsService: AlertSessionsService) {}
+  constructor(
+    private readonly alertSessionsService: AlertSessionsService,
+    private readonly emergencyDispatchService: EmergencyDispatchService,
+  ) {}
 
   @Post('manual')
   startManual(
@@ -44,5 +48,13 @@ export class AlertSessionsController {
     @Body() dto: CloseAlertSessionDto,
   ) {
     return this.alertSessionsService.close(user.sub, id, dto);
+  }
+
+  @Post(':id/dispatch-contacts')
+  dispatchContacts(
+    @CurrentUser() user: { sub: string },
+    @Param('id') id: string,
+  ) {
+    return this.emergencyDispatchService.dispatchCriticalAlert(user.sub, id);
   }
 }
