@@ -3,6 +3,7 @@ import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { JwtGuard } from '../auth/guards/jwt.guard';
 import { AlertSessionsService } from './alert-sessions.service';
 import { CloseAlertSessionDto } from './dto/close-alert-session.dto';
+import { StartLocationAlertSessionDto } from './dto/start-location-alert-session.dto';
 import { StartManualAlertSessionDto } from './dto/start-manual-alert-session.dto';
 
 @UseGuards(JwtGuard)
@@ -16,6 +17,14 @@ export class AlertSessionsController {
     @Body() dto: StartManualAlertSessionDto,
   ) {
     return this.alertSessionsService.startManual(user.sub, dto);
+  }
+
+  @Post('location')
+  startLocation(
+    @CurrentUser() user: { sub: string },
+    @Body() dto: StartLocationAlertSessionDto,
+  ) {
+    return this.alertSessionsService.startLocation(user.sub, dto);
   }
 
   @Get('active')

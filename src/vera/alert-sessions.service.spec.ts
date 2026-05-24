@@ -4,14 +4,25 @@ import {
   AlertLevel,
   AlertStatus,
   AlertTrigger,
+  SafetyLocationType,
   type AlertEvent,
   type AlertSession,
+  type SafetyLocation,
 } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { AlertSessionsService } from './alert-sessions.service';
 
 type AlertSessionWithEvents = AlertSession & {
   events: AlertEvent[];
+};
+
+type AlertEventCreateData = {
+  userId: string;
+  type: AlertEventType;
+  message?: string;
+  metadata: Record<string, string | number>;
+  latitude?: number;
+  longitude?: number;
 };
 
 type OrderedEventsInclude = {
@@ -25,17 +36,11 @@ type AlertSessionCreateArgs = {
     userId: string;
     trigger: AlertTrigger;
     level: AlertLevel;
+    safetyLocationId?: string;
     initialLatitude?: number;
     initialLongitude?: number;
     events: {
-      create: {
-        userId: string;
-        type: AlertEventType;
-        message?: string;
-        metadata: { source: string };
-        latitude?: number;
-        longitude?: number;
-      };
+      create: AlertEventCreateData | AlertEventCreateData[];
     };
   };
   include: OrderedEventsInclude;
@@ -77,6 +82,21 @@ type AlertSessionDelegateMock = {
   update: jest.Mock<Promise<AlertSessionWithEvents>, [AlertSessionUpdateArgs]>;
 };
 
+type SafetyLocationDelegateMock = {
+  findFirst: jest.Mock<
+    Promise<SafetyLocation | null>,
+    [
+      {
+        where: {
+          id: string;
+          userId: string;
+          enabled: true;
+        };
+      },
+    ]
+  >;
+};
+
 const baseEvent = (overrides: Partial<AlertEvent> = {}): AlertEvent => ({
   id: 'event-id',
   userId: 'user-id',
@@ -110,9 +130,26 @@ const baseSession = (
   ...overrides,
 });
 
+const baseSafetyLocation = (
+  overrides: Partial<SafetyLocation> = {},
+): SafetyLocation => ({
+  id: 'location-id',
+  userId: 'user-id',
+  name: 'Home',
+  latitude: -3.7319,
+  longitude: -38.5267,
+  radiusMeters: 120,
+  type: SafetyLocationType.RISK,
+  enabled: true,
+  createdAt: new Date('2026-05-24T00:00:00.000Z'),
+  updatedAt: new Date('2026-05-24T00:00:00.000Z'),
+  ...overrides,
+});
+
 describe('AlertSessionsService', () => {
   let service: AlertSessionsService;
   let alertSession: AlertSessionDelegateMock;
+  let safetyLocation: SafetyLocationDelegateMock;
 
   beforeEach(() => {
     alertSession = {
@@ -129,8 +166,22 @@ describe('AlertSessionsService', () => {
         [AlertSessionUpdateArgs]
       >(),
     };
+    safetyLocation = {
+      findFirst: jest.fn<
+        Promise<SafetyLocation | null>,
+        [
+          {
+            where: {
+              id: string;
+              userId: string;
+              enabled: true;
+            };
+          },
+        ]
+      >(),
+    };
 
-    const prisma = { alertSession } as unknown as PrismaService;
+    const prisma = { alertSession, safetyLocation } as unknown as PrismaService;
     service = new AlertSessionsService(prisma);
   });
 
@@ -180,6 +231,101 @@ describe('AlertSessionsService', () => {
     expect(alertSession.create).not.toHaveBeenCalled();
     expect(result.alreadyActive).toBe(true);
     expect(result.id).toBe('session-id');
+  });
+
+  it('starts a location alert session with a monitored location snapshot', async () => {
+    safetyLocation.findFirst.mockResolvedValue(baseSafetyLocation());
+    alertSession.findFirst.mockResolvedValueOnce(null);
+    alertSession.create.mockResolvedValue(
+      baseSession({
+        safetyLocationId: 'location-id',
+        trigger: AlertTrigger.LOCATION,
+        initialLatitude: -3.7319,
+        initialLongitude: -38.5267,
+        events: [
+          baseEvent(),
+          baseEvent({
+            id: 'location-event-id',
+            type: AlertEventType.LOCATION_ENTERED,
+          }),
+        ],
+      }),
+    );
+
+    const result = await service.startLocation('user-id', {
+      safetyLocationId: 'location-id',
+      currentLatitude: -3.7319,
+      currentLongitude: -38.5267,
+      message: 'Entered monitored area',
+    });
+
+    expect(safetyLocation.findFirst).toHaveBeenCalledWith({
+      where: {
+        id: 'location-id',
+        userId: 'user-id',
+        enabled: true,
+      },
+    });
+    expect(alertSession.create).toHaveBeenCalledWith({
+      data: {
+        userId: 'user-id',
+        safetyLocationId: 'location-id',
+        trigger: AlertTrigger.LOCATION,
+        level: AlertLevel.NORMAL,
+        initialLatitude: -3.7319,
+        initialLongitude: -38.5267,
+        events: {
+          create: [
+            {
+              userId: 'user-id',
+              type: AlertEventType.SESSION_STARTED,
+              message: 'Entered monitored area',
+              metadata: {
+                source: 'location',
+                safetyLocationId: 'location-id',
+              },
+              latitude: -3.7319,
+              longitude: -38.5267,
+            },
+            {
+              userId: 'user-id',
+              type: AlertEventType.LOCATION_ENTERED,
+              message: 'Entered monitored area',
+              metadata: {
+                safetyLocationId: 'location-id',
+                safetyLocationName: 'Home',
+                safetyLocationType: SafetyLocationType.RISK,
+                radiusMeters: 120,
+              },
+              latitude: -3.7319,
+              longitude: -38.5267,
+            },
+          ],
+        },
+      },
+      include: {
+        events: {
+          orderBy: { createdAt: 'asc' },
+        },
+      },
+    });
+    expect(result.alreadyActive).toBe(false);
+    expect(result.trigger).toBe(AlertTrigger.LOCATION);
+    expect(result.safetyLocationId).toBe('location-id');
+  });
+
+  it('rejects location starts for disabled or unknown user locations', async () => {
+    safetyLocation.findFirst.mockResolvedValue(null);
+
+    await expect(
+      service.startLocation('user-id', {
+        safetyLocationId: 'location-id',
+        currentLatitude: -3.7319,
+        currentLongitude: -38.5267,
+      }),
+    ).rejects.toBeInstanceOf(NotFoundException);
+
+    expect(alertSession.create).not.toHaveBeenCalled();
   });
 
   it('rejects coordinates sent without a matching pair', async () => {
