@@ -37,6 +37,7 @@ model User {
   alertSessions          AlertSession[]
   alertEvents            AlertEvent[]
   evidenceRecords        EvidenceRecord[]
+  evidenceAuditEvents    EvidenceAuditEvent[]
 }
 
 model Profile {
@@ -311,6 +312,11 @@ enum EvidenceType {
   FILE
 }
 
+enum EvidenceAuditAction {
+  UPLOADED
+  HASH_VERIFIED
+}
+
 model SafetyProfile {
   id                           String    @id @default(uuid())
   userId                       String    @unique
@@ -405,20 +411,44 @@ model AlertEvent {
 }
 
 model EvidenceRecord {
-  id             String       @id @default(uuid())
+  id             String               @id @default(uuid())
   userId         String
-  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user           User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
   alertSessionId String
-  alertSession   AlertSession @relation(fields: [alertSessionId], references: [id], onDelete: Cascade)
+  alertSession   AlertSession         @relation(fields: [alertSessionId], references: [id], onDelete: Cascade)
   type           EvidenceType
   size           Int
   mimeType       String
   originalName   String?
-  storagePath    String       @unique
+  storagePath    String               @unique
+  contentHash    String
+  hashAlgorithm  String               @default("SHA-256")
+  hashedAt       DateTime             @default(now())
   metadata       Json?
-  createdAt      DateTime     @default(now())
+  createdAt      DateTime             @default(now())
+  auditEvents    EvidenceAuditEvent[]
 
   @@index([userId, createdAt])
   @@index([alertSessionId, createdAt])
+  @@index([contentHash])
   @@index([type])
+}
+
+model EvidenceAuditEvent {
+  id                String              @id @default(uuid())
+  userId            String
+  user              User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  evidenceRecordId  String
+  evidenceRecord    EvidenceRecord      @relation(fields: [evidenceRecordId], references: [id], onDelete: Cascade)
+  action            EvidenceAuditAction
+  contentHash       String?
+  hashAlgorithm     String              @default("SHA-256")
+  previousEventHash String?
+  eventHash         String              @unique
+  metadata          Json?
+  createdAt         DateTime            @default(now())
+
+  @@index([userId, createdAt])
+  @@index([evidenceRecordId, createdAt])
+  @@index([action])
 }

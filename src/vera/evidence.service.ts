@@ -6,11 +6,14 @@ import {
 import {
   AlertEventType,
   AlertStatus,
+  EvidenceAuditAction,
+  type EvidenceAuditEvent,
   EvidenceType,
   type AlertSession,
   type EvidenceRecord,
   type Prisma,
 } from '@prisma/client';
+import { createHash } from 'node:crypto';
 import { basename } from 'node:path';
 import { PrismaService } from '../prisma/prisma.service';
 import { UploadEvidenceDto } from './dto/upload-evidence.dto';
@@ -20,6 +23,7 @@ export const MAX_EVIDENCE_UPLOAD_BYTES = 25 * 1024 * 1024;
 
 type EvidenceMetadataValue = string | number | boolean | null;
 type EvidenceMetadataPayload = Record<string, EvidenceMetadataValue>;
+type EvidenceAuditMetadataPayload = Record<string, EvidenceMetadataValue>;
 
 export type UploadedEvidenceFile = {
   buffer: Buffer;
@@ -36,14 +40,36 @@ type EvidenceRecordResponse = {
   size: number;
   mimeType: string;
   originalName: string | null;
+  contentHash: string;
+  hashAlgorithm: string;
+  hashedAt: Date;
   metadata: Prisma.JsonValue | null;
   createdAt: Date;
+};
+
+type EvidenceVerificationResponse = {
+  evidenceRecordId: string;
+  hashAlgorithm: string;
+  storedHash: string;
+  calculatedHash: string;
+  matches: boolean;
+  checkedAt: Date;
+};
+
+type CreateAuditEventInput = {
+  userId: string;
+  evidenceRecordId: string;
+  action: EvidenceAuditAction;
+  contentHash?: string;
+  metadata?: EvidenceAuditMetadataPayload;
 };
 
 const MAX_METADATA_KEYS = 20;
 const MAX_METADATA_KEY_LENGTH = 40;
 const MAX_METADATA_STRING_LENGTH = 240;
 const MAX_ORIGINAL_NAME_LENGTH = 240;
+const HASH_ALGORITHM = 'SHA-256';
+const NODE_HASH_ALGORITHM = 'sha256';
 
 const FILE_MIME_TYPES = new Set([
   'application/json',
@@ -78,6 +104,8 @@ export class EvidenceService {
     }
 
     const metadata = this.parseMetadata(dto.metadata);
+    const contentHash = this.calculateContentHash(file.buffer);
+    const hashedAt = new Date();
     const upload = await this.evidenceStorage.uploadEvidence({
       userId,
       alertSessionId,
@@ -96,6 +124,9 @@ export class EvidenceService {
           mimeType: file.mimetype,
           originalName: this.normalizeOriginalName(file.originalname),
           storagePath: upload.path,
+          contentHash,
+          hashAlgorithm: HASH_ALGORITHM,
+          hashedAt,
           metadata,
         },
       });
@@ -111,7 +142,22 @@ export class EvidenceService {
             evidenceType: evidenceRecord.type,
             mimeType: evidenceRecord.mimeType,
             size: evidenceRecord.size,
+            contentHash: evidenceRecord.contentHash,
+            hashAlgorithm: evidenceRecord.hashAlgorithm,
           },
+        },
+      });
+
+      await this.createAuditEvent(tx, {
+        userId,
+        evidenceRecordId: evidenceRecord.id,
+        action: EvidenceAuditAction.UPLOADED,
+        contentHash: evidenceRecord.contentHash,
+        metadata: {
+          alertSessionId,
+          evidenceType: evidenceRecord.type,
+          mimeType: evidenceRecord.mimeType,
+          size: evidenceRecord.size,
         },
       });
 
@@ -119,6 +165,47 @@ export class EvidenceService {
     });
 
     return this.toResponse(record);
+  }
+
+  async verify(
+    userId: string,
+    alertSessionId: string,
+    evidenceRecordId: string,
+  ): Promise<EvidenceVerificationResponse> {
+    const evidenceRecord = await this.findOwnedEvidenceRecord(
+      userId,
+      alertSessionId,
+      evidenceRecordId,
+    );
+    const download = await this.evidenceStorage.downloadEvidence(
+      evidenceRecord.storagePath,
+    );
+    const calculatedHash = this.calculateContentHash(
+      Buffer.from(download.body),
+    );
+    const checkedAt = new Date();
+    const matches = calculatedHash === evidenceRecord.contentHash;
+
+    await this.createAuditEvent(this.prisma, {
+      userId,
+      evidenceRecordId: evidenceRecord.id,
+      action: EvidenceAuditAction.HASH_VERIFIED,
+      contentHash: calculatedHash,
+      metadata: {
+        alertSessionId,
+        matches,
+        storedHash: evidenceRecord.contentHash,
+      },
+    });
+
+    return {
+      evidenceRecordId: evidenceRecord.id,
+      hashAlgorithm: evidenceRecord.hashAlgorithm,
+      storedHash: evidenceRecord.contentHash,
+      calculatedHash,
+      matches,
+      checkedAt,
+    };
   }
 
   private async findOwnedSession(
@@ -134,6 +221,57 @@ export class EvidenceService {
     }
 
     return session;
+  }
+
+  private async findOwnedEvidenceRecord(
+    userId: string,
+    alertSessionId: string,
+    evidenceRecordId: string,
+  ): Promise<EvidenceRecord> {
+    const evidenceRecord = await this.prisma.evidenceRecord.findFirst({
+      where: {
+        id: evidenceRecordId,
+        userId,
+        alertSessionId,
+      },
+    });
+
+    if (!evidenceRecord) {
+      throw new NotFoundException('Evidence record not found');
+    }
+
+    return evidenceRecord;
+  }
+
+  private async createAuditEvent(
+    client: Prisma.TransactionClient | PrismaService,
+    input: CreateAuditEventInput,
+  ): Promise<EvidenceAuditEvent> {
+    const previousEvent = await client.evidenceAuditEvent.findFirst({
+      where: { evidenceRecordId: input.evidenceRecordId },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      select: { eventHash: true },
+    });
+    const createdAt = new Date();
+    const eventHash = this.calculateAuditEventHash({
+      ...input,
+      previousEventHash: previousEvent?.eventHash,
+      createdAt,
+    });
+
+    return client.evidenceAuditEvent.create({
+      data: {
+        userId: input.userId,
+        evidenceRecordId: input.evidenceRecordId,
+        action: input.action,
+        contentHash: input.contentHash,
+        hashAlgorithm: HASH_ALGORITHM,
+        previousEventHash: previousEvent?.eventHash,
+        eventHash,
+        metadata: input.metadata,
+        createdAt,
+      },
+    });
   }
 
   private validateFile(
@@ -269,6 +407,52 @@ export class EvidenceService {
     return name || null;
   }
 
+  private calculateContentHash(body: Buffer): string {
+    return createHash(NODE_HASH_ALGORITHM).update(body).digest('hex');
+  }
+
+  private calculateAuditEventHash(
+    input: CreateAuditEventInput & {
+      previousEventHash?: string;
+      createdAt: Date;
+    },
+  ): string {
+    return createHash(NODE_HASH_ALGORITHM)
+      .update(
+        this.stableStringify({
+          action: input.action,
+          contentHash: input.contentHash ?? null,
+          createdAt: input.createdAt.toISOString(),
+          evidenceRecordId: input.evidenceRecordId,
+          hashAlgorithm: HASH_ALGORITHM,
+          metadata: input.metadata ?? null,
+          previousEventHash: input.previousEventHash ?? null,
+          userId: input.userId,
+        }),
+      )
+      .digest('hex');
+  }
+
+  private stableStringify(value: unknown): string {
+    if (value === null || typeof value !== 'object') {
+      return JSON.stringify(value);
+    }
+
+    if (Array.isArray(value)) {
+      return `[${value.map((item) => this.stableStringify(item)).join(',')}]`;
+    }
+
+    const entries = Object.entries(value).sort(([left], [right]) =>
+      left.localeCompare(right),
+    );
+
+    return `{${entries
+      .map(
+        ([key, item]) => `${JSON.stringify(key)}:${this.stableStringify(item)}`,
+      )
+      .join(',')}}`;
+  }
+
   private toResponse(record: EvidenceRecord): EvidenceRecordResponse {
     return {
       id: record.id,
@@ -278,6 +462,9 @@ export class EvidenceService {
       size: record.size,
       mimeType: record.mimeType,
       originalName: record.originalName,
+      contentHash: record.contentHash,
+      hashAlgorithm: record.hashAlgorithm,
+      hashedAt: record.hashedAt,
       metadata: record.metadata,
       createdAt: record.createdAt,
     };
