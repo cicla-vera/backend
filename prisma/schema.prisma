@@ -38,6 +38,7 @@ model User {
   alertEvents            AlertEvent[]
   evidenceRecords        EvidenceRecord[]
   evidenceAuditEvents    EvidenceAuditEvent[]
+  evidenceAnalyses       EvidenceAnalysis[]
 }
 
 model Profile {
@@ -318,6 +319,11 @@ enum EvidenceAuditAction {
   HIDDEN_FROM_USER
 }
 
+enum EvidenceAnalysisStatus {
+  COMPLETED
+  FAILED
+}
+
 model SafetyProfile {
   id                           String    @id @default(uuid())
   userId                       String    @unique
@@ -369,23 +375,24 @@ model SafetyLocation {
 }
 
 model AlertSession {
-  id                  String           @id @default(uuid())
+  id                  String             @id @default(uuid())
   userId              String
-  user                User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user                User               @relation(fields: [userId], references: [id], onDelete: Cascade)
   safetyLocationId    String?
-  safetyLocation      SafetyLocation?  @relation(fields: [safetyLocationId], references: [id], onDelete: SetNull)
+  safetyLocation      SafetyLocation?    @relation(fields: [safetyLocationId], references: [id], onDelete: SetNull)
   trigger             AlertTrigger
-  status              AlertStatus      @default(ACTIVE)
-  level               AlertLevel       @default(NORMAL)
-  startedAt           DateTime         @default(now())
+  status              AlertStatus        @default(ACTIVE)
+  level               AlertLevel         @default(NORMAL)
+  startedAt           DateTime           @default(now())
   endedAt             DateTime?
   criticalEscalatedAt DateTime?
   initialLatitude     Float?
   initialLongitude    Float?
-  createdAt           DateTime         @default(now())
-  updatedAt           DateTime         @updatedAt
+  createdAt           DateTime           @default(now())
+  updatedAt           DateTime           @updatedAt
   events              AlertEvent[]
   evidenceRecords     EvidenceRecord[]
+  evidenceAnalyses    EvidenceAnalysis[]
 
   @@index([userId, status])
   @@index([userId, level])
@@ -431,6 +438,7 @@ model EvidenceRecord {
   metadata         Json?
   createdAt        DateTime             @default(now())
   auditEvents      EvidenceAuditEvent[]
+  analyses         EvidenceAnalysis[]
 
   @@index([userId, createdAt])
   @@index([userId, hiddenFromUserAt])
@@ -458,4 +466,29 @@ model EvidenceAuditEvent {
   @@index([userId, createdAt])
   @@index([evidenceRecordId, createdAt])
   @@index([action])
+}
+
+model EvidenceAnalysis {
+  id                  String                 @id @default(uuid())
+  userId              String
+  user                User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  alertSessionId      String
+  alertSession        AlertSession           @relation(fields: [alertSessionId], references: [id], onDelete: Cascade)
+  evidenceRecordId    String
+  evidenceRecord      EvidenceRecord         @relation(fields: [evidenceRecordId], references: [id], onDelete: Cascade)
+  status              EvidenceAnalysisStatus
+  riskLevel           String?
+  suggestedAlertLevel AlertLevel?
+  confidence          Float?
+  summary             String?
+  detectedSignals     Json?
+  shouldEscalate      Boolean?
+  failureReason       String?
+  createdAt           DateTime               @default(now())
+
+  @@index([userId, createdAt])
+  @@index([alertSessionId, createdAt])
+  @@index([evidenceRecordId, createdAt])
+  @@index([status])
+  @@index([suggestedAlertLevel])
 }

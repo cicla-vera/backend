@@ -18,11 +18,15 @@ import {
   MAX_EVIDENCE_UPLOAD_BYTES,
   type UploadedEvidenceFile,
 } from './evidence.service';
+import { EvidenceAnalysisService } from './evidence-analysis.service';
 
 @UseGuards(JwtGuard)
 @Controller('vera/alert-sessions/:alertSessionId/evidence')
 export class EvidenceController {
-  constructor(private readonly evidenceService: EvidenceService) {}
+  constructor(
+    private readonly evidenceService: EvidenceService,
+    private readonly evidenceAnalysisService: EvidenceAnalysisService,
+  ) {}
 
   @Get()
   findAll(
@@ -54,6 +58,15 @@ export class EvidenceController {
     @Param('id') id: string,
   ) {
     return this.evidenceService.verify(user.sub, alertSessionId, id);
+  }
+
+  @Post(':id/analyze')
+  analyze(
+    @CurrentUser() user: { sub: string },
+    @Param('alertSessionId') alertSessionId: string,
+    @Param('id') id: string,
+  ) {
+    return this.evidenceAnalysisService.analyze(user.sub, alertSessionId, id);
   }
 
   @Delete(':id')
