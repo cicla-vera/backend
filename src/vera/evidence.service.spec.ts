@@ -41,6 +41,25 @@ type EvidenceRecordFindFirstArgs = {
     id: string;
     userId: string;
     alertSessionId: string;
+    deletedAt: null;
+  };
+};
+
+type EvidenceRecordFindManyArgs = {
+  where: {
+    userId: string;
+    alertSessionId: string;
+    hiddenFromUserAt: null;
+    deletedAt: null;
+  };
+  orderBy: { createdAt: 'desc' };
+};
+
+type EvidenceRecordUpdateArgs = {
+  where: { id: string };
+  data: {
+    hiddenFromUserAt: Date;
+    retentionUntil: Date;
   };
 };
 
@@ -84,6 +103,7 @@ type EvidenceAuditEventCreateArgs = {
 type TransactionClientMock = {
   evidenceRecord: {
     create: jest.Mock<Promise<EvidenceRecord>, [EvidenceRecordCreateArgs]>;
+    update: jest.Mock<Promise<EvidenceRecord>, [EvidenceRecordUpdateArgs]>;
   };
   evidenceAuditEvent: {
     findFirst: jest.Mock<
@@ -115,6 +135,10 @@ type PrismaMock = {
     findFirst: jest.Mock<
       Promise<EvidenceRecord | null>,
       [EvidenceRecordFindFirstArgs]
+    >;
+    findMany: jest.Mock<
+      Promise<EvidenceRecord[]>,
+      [EvidenceRecordFindManyArgs]
     >;
   };
   evidenceAuditEvent: {
@@ -178,6 +202,9 @@ const baseEvidence = (
   contentHash: audioHash,
   hashAlgorithm: 'SHA-256',
   hashedAt: new Date('2026-05-24T00:00:00.000Z'),
+  hiddenFromUserAt: null,
+  retentionUntil: null,
+  deletedAt: null,
   metadata: null,
   createdAt: new Date('2026-05-24T00:00:00.000Z'),
   ...overrides,
@@ -239,6 +266,7 @@ describe('EvidenceService', () => {
     tx = {
       evidenceRecord: {
         create: jest.fn<Promise<EvidenceRecord>, [EvidenceRecordCreateArgs]>(),
+        update: jest.fn<Promise<EvidenceRecord>, [EvidenceRecordUpdateArgs]>(),
       },
       evidenceAuditEvent: {
         findFirst: jest.fn<
@@ -265,6 +293,10 @@ describe('EvidenceService', () => {
         findFirst: jest.fn<
           Promise<EvidenceRecord | null>,
           [EvidenceRecordFindFirstArgs]
+        >(),
+        findMany: jest.fn<
+          Promise<EvidenceRecord[]>,
+          [EvidenceRecordFindManyArgs]
         >(),
       },
       evidenceAuditEvent: {
@@ -305,6 +337,14 @@ describe('EvidenceService', () => {
           hashAlgorithm: data.hashAlgorithm,
           hashedAt: data.hashedAt,
           metadata: data.metadata ?? null,
+        }),
+      );
+    });
+    tx.evidenceRecord.update.mockImplementation(({ data }) => {
+      return Promise.resolve(
+        baseEvidence({
+          hiddenFromUserAt: data.hiddenFromUserAt,
+          retentionUntil: data.retentionUntil,
         }),
       );
     });
@@ -453,6 +493,102 @@ describe('EvidenceService', () => {
     expect(result.id).toBe('evidence-id');
   });
 
+  it('lists only visible evidence records for a user-owned session', async () => {
+    prisma.alertSession.findFirst.mockResolvedValue(baseSession());
+    prisma.evidenceRecord.findMany.mockResolvedValue([baseEvidence()]);
+
+    const result = await service.findAll('user-id', 'session-id');
+
+    expect(prisma.alertSession.findFirst).toHaveBeenCalledWith({
+      where: { id: 'session-id', userId: 'user-id' },
+    });
+    expect(prisma.evidenceRecord.findMany).toHaveBeenCalledWith({
+      where: {
+        userId: 'user-id',
+        alertSessionId: 'session-id',
+        hiddenFromUserAt: null,
+        deletedAt: null,
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+    expect(result).toHaveLength(1);
+    expect(result[0]).not.toHaveProperty('storagePath');
+    expect(result[0]?.hiddenFromUserAt).toBeNull();
+  });
+
+  it('hides evidence from the user without deleting it from storage', async () => {
+    prisma.evidenceRecord.findFirst.mockResolvedValue(baseEvidence());
+
+    const result = await service.hideFromUser(
+      'user-id',
+      'session-id',
+      'evidence-id',
+    );
+
+    expect(prisma.evidenceRecord.findFirst).toHaveBeenCalledWith({
+      where: {
+        id: 'evidence-id',
+        userId: 'user-id',
+        alertSessionId: 'session-id',
+        deletedAt: null,
+      },
+    });
+    expect(tx.evidenceRecord.update).toHaveBeenCalledTimes(1);
+
+    const updateArgs = tx.evidenceRecord.update.mock.calls[0]?.[0];
+
+    if (!updateArgs) {
+      throw new Error('Expected evidence record update call');
+    }
+
+    expect(updateArgs.where).toEqual({ id: 'evidence-id' });
+    expect(updateArgs.data.hiddenFromUserAt).toBeInstanceOf(Date);
+    expect(updateArgs.data.retentionUntil).toBeInstanceOf(Date);
+    expect(updateArgs.data.retentionUntil.getTime()).toBeGreaterThan(
+      updateArgs.data.hiddenFromUserAt.getTime(),
+    );
+
+    const auditCreateArgs = tx.evidenceAuditEvent.create.mock.calls[0]?.[0];
+
+    if (!auditCreateArgs) {
+      throw new Error('Expected evidence hide audit event');
+    }
+
+    expect(auditCreateArgs.data).toMatchObject({
+      userId: 'user-id',
+      evidenceRecordId: 'evidence-id',
+      action: EvidenceAuditAction.HIDDEN_FROM_USER,
+      contentHash: audioHash,
+      hashAlgorithm: 'SHA-256',
+      metadata: {
+        alertSessionId: 'session-id',
+      },
+    });
+    expect(evidenceStorage.downloadEvidence).not.toHaveBeenCalled();
+    expect(evidenceStorage.uploadEvidence).not.toHaveBeenCalled();
+    expect(result.hiddenFromUserAt).toBeInstanceOf(Date);
+    expect(result.retentionUntil).toBeInstanceOf(Date);
+  });
+
+  it('does not create a new retention event for already hidden evidence', async () => {
+    const hiddenFromUserAt = new Date('2026-05-24T00:00:00.000Z');
+    const retentionUntil = new Date('2026-11-20T00:00:00.000Z');
+    prisma.evidenceRecord.findFirst.mockResolvedValue(
+      baseEvidence({ hiddenFromUserAt, retentionUntil }),
+    );
+
+    const result = await service.hideFromUser(
+      'user-id',
+      'session-id',
+      'evidence-id',
+    );
+
+    expect(tx.evidenceRecord.update).not.toHaveBeenCalled();
+    expect(tx.evidenceAuditEvent.create).not.toHaveBeenCalled();
+    expect(result.hiddenFromUserAt).toBe(hiddenFromUserAt);
+    expect(result.retentionUntil).toBe(retentionUntil);
+  });
+
   it('verifies a stored evidence file against its saved hash', async () => {
     prisma.evidenceRecord.findFirst.mockResolvedValue(baseEvidence());
     prisma.evidenceAuditEvent.findFirst.mockResolvedValue({
@@ -466,6 +602,7 @@ describe('EvidenceService', () => {
         id: 'evidence-id',
         userId: 'user-id',
         alertSessionId: 'session-id',
+        deletedAt: null,
       },
     });
     expect(evidenceStorage.downloadEvidence).toHaveBeenCalledWith(
