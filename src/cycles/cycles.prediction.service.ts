@@ -1,6 +1,16 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 
+const DAY_IN_MS = 1000 * 60 * 60 * 24;
+const DEFAULT_CYCLE_LENGTH_DAYS = 28;
+const OVULATION_OFFSET_DAYS = 14;
+const FERTILE_WINDOW_DAYS_BEFORE_OVULATION = 5;
+const FERTILE_WINDOW_DAYS_AFTER_OVULATION = 1;
+
+type CycleForPrediction = {
+  startDate: Date;
+};
+
 @Injectable()
 export class CyclesPredictionService {
   constructor(private prisma: PrismaService) {}
@@ -21,14 +31,8 @@ export class CyclesPredictionService {
       };
     }
 
-    const durations = cycles
-      .filter((c) => c.duration !== null)
-      .map((c) => c.duration as number);
-
     const averageCycleLength =
-      durations.length > 0
-        ? Math.round(durations.reduce((a, b) => a + b, 0) / durations.length)
-        : 28;
+      this.getAverageCycleLength(cycles) ?? DEFAULT_CYCLE_LENGTH_DAYS;
 
     const lastCycle = cycles[0];
     const lastStartDate = new Date(lastCycle.startDate);
@@ -37,22 +41,26 @@ export class CyclesPredictionService {
     nextPeriodDate.setDate(nextPeriodDate.getDate() + averageCycleLength);
 
     const ovulationDate = new Date(nextPeriodDate);
-    ovulationDate.setDate(ovulationDate.getDate() - 14);
+    ovulationDate.setDate(ovulationDate.getDate() - OVULATION_OFFSET_DAYS);
 
     const fertileStart = new Date(ovulationDate);
-    fertileStart.setDate(fertileStart.getDate() - 5);
+    fertileStart.setDate(
+      fertileStart.getDate() - FERTILE_WINDOW_DAYS_BEFORE_OVULATION,
+    );
 
     const fertileEnd = new Date(ovulationDate);
-    fertileEnd.setDate(fertileEnd.getDate() + 1);
+    fertileEnd.setDate(
+      fertileEnd.getDate() + FERTILE_WINDOW_DAYS_AFTER_OVULATION,
+    );
 
     const today = new Date();
-    const daysUntilNextPeriod = Math.round(
-      (nextPeriodDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24),
+    const daysUntilNextPeriod = this.calculateDayDifference(
+      today,
+      nextPeriodDate,
     );
 
-    const currentCycleDay = Math.round(
-      (today.getTime() - lastStartDate.getTime()) / (1000 * 60 * 60 * 24) + 1,
-    );
+    const currentCycleDay =
+      this.calculateDayDifference(lastStartDate, today) + 1;
 
     return {
       averageCycleLength,
@@ -71,5 +79,43 @@ export class CyclesPredictionService {
       },
       basedOnCycles: cycles.length,
     };
+  }
+
+  private getAverageCycleLength(cycles: CycleForPrediction[]) {
+    if (cycles.length < 2) {
+      return null;
+    }
+
+    const cycleStarts = [...cycles]
+      .map((cycle) => cycle.startDate)
+      .sort((left, right) => left.getTime() - right.getTime());
+
+    const cycleLengths: number[] = [];
+
+    for (let index = 1; index < cycleStarts.length; index += 1) {
+      cycleLengths.push(
+        this.calculateDayDifference(cycleStarts[index - 1], cycleStarts[index]),
+      );
+    }
+
+    return Math.round(
+      cycleLengths.reduce((total, length) => total + length, 0) /
+        cycleLengths.length,
+    );
+  }
+
+  private calculateDayDifference(startDate: Date, endDate: Date) {
+    const start = Date.UTC(
+      startDate.getUTCFullYear(),
+      startDate.getUTCMonth(),
+      startDate.getUTCDate(),
+    );
+    const end = Date.UTC(
+      endDate.getUTCFullYear(),
+      endDate.getUTCMonth(),
+      endDate.getUTCDate(),
+    );
+
+    return Math.round((end - start) / DAY_IN_MS);
   }
 }
