@@ -18,6 +18,9 @@ import { SleepModule } from './sleep/sleep.module';
 import { IntercourseModule } from './intercourse/intercourse.module';
 import { MedicationsModule } from './medications/medications.module';
 import { DataImportModule } from './data-import/data-import.module';
+import { NotificationsModule } from './notifications/notifications.module';
+import { VeraModule } from './vera/vera.module';
+import { AiModule } from './ai/ai.module';
 
 @Module({
   imports: [
@@ -40,6 +43,9 @@ import { DataImportModule } from './data-import/data-import.module';
     IntercourseModule,
     MedicationsModule,
     DataImportModule,
+    NotificationsModule,
+    VeraModule,
+    AiModule,
   ],
   controllers: [AppController],
   providers: [AppService],
