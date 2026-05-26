@@ -29,6 +29,24 @@ cp .env.example .env
 npm run start:dev
 ```
 
+## Ambiente local
+
+O backend escuta em `HOST=0.0.0.0` por padrão para facilitar testes com
+Expo, celular físico, emuladores e WSL. O prefixo global da API é `/api`.
+
+Para web local, o backend habilita CORS em desenvolvimento quando
+`CORS_ORIGINS` está vazio. Em ambientes compartilhados/prod, use uma allowlist:
+
+```env
+PORT=3001
+HOST=0.0.0.0
+CORS_ORIGINS=http://localhost:8081,http://localhost:19006
+```
+
+No BlueStacks, `10.0.2.2` aponta para o host Windows. Se o backend estiver no
+WSL, mantenha o backend escutando em `0.0.0.0` e preserve o encaminhamento de
+porta Windows/WSL que expõe a porta `3001` para o host.
+
 ## Estrutura de módulos
 
 Estrutura atual:
