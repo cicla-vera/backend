@@ -6,6 +6,7 @@ import {
 import {
   AlertEventType,
   AlertLevel,
+  AlertStatus,
   EvidenceAnalysisStatus,
   EvidenceType,
   type AlertEvent,
@@ -54,6 +55,22 @@ type EvidenceAnalysisFindFirstArgs = {
   orderBy: [{ createdAt: 'desc' }, { id: 'desc' }];
 };
 
+type EvidenceAnalysisCountArgs = {
+  where: Record<string, unknown>;
+};
+
+type AlertSessionUpdateManyArgs = {
+  where: Record<string, unknown>;
+  data: {
+    level: AlertLevel;
+    criticalEscalatedAt: Date;
+  };
+};
+
+type AlertSessionUpdateManyResult = {
+  count: number;
+};
+
 type AlertEventCreateArgs = {
   data: {
     userId: string;
@@ -67,6 +84,13 @@ type AlertEventCreateArgs = {
 type TransactionClientMock = {
   evidenceAnalysis: {
     update: jest.Mock<Promise<EvidenceAnalysis>, [EvidenceAnalysisUpdateArgs]>;
+    count: jest.Mock<Promise<number>, [EvidenceAnalysisCountArgs]>;
+  };
+  alertSession: {
+    updateMany: jest.Mock<
+      Promise<AlertSessionUpdateManyResult>,
+      [AlertSessionUpdateManyArgs]
+    >;
   };
   alertEvent: {
     create: jest.Mock<Promise<AlertEvent>, [AlertEventCreateArgs]>;
@@ -231,6 +255,13 @@ describe('EvidenceAnalysisService', () => {
           Promise<EvidenceAnalysis>,
           [EvidenceAnalysisUpdateArgs]
         >(),
+        count: jest.fn<Promise<number>, [EvidenceAnalysisCountArgs]>(),
+      },
+      alertSession: {
+        updateMany: jest.fn<
+          Promise<AlertSessionUpdateManyResult>,
+          [AlertSessionUpdateManyArgs]
+        >(),
       },
       alertEvent: {
         create: jest.fn<Promise<AlertEvent>, [AlertEventCreateArgs]>(),
@@ -338,6 +369,8 @@ describe('EvidenceAnalysisService', () => {
         }),
       );
     });
+    tx.evidenceAnalysis.count.mockResolvedValue(0);
+    tx.alertSession.updateMany.mockResolvedValue({ count: 1 });
     tx.alertEvent.create.mockResolvedValue(baseEvent());
     evidenceStorage.downloadEvidence.mockResolvedValue({
       bucket: 'vera-evidence',
@@ -423,7 +456,7 @@ describe('EvidenceAnalysisService', () => {
       recommendedAction: 'ESCALATE_CONTACTS',
       failureReason: null,
     });
-    expect(tx.alertEvent.create).toHaveBeenCalledWith({
+    expect(tx.alertEvent.create).toHaveBeenNthCalledWith(1, {
       data: {
         userId: 'user-id',
         alertSessionId: 'session-id',
@@ -443,6 +476,41 @@ describe('EvidenceAnalysisService', () => {
         },
       },
     });
+    expect(tx.alertSession.updateMany).toHaveBeenCalledWith({
+      where: {
+        id: 'session-id',
+        userId: 'user-id',
+        status: AlertStatus.ACTIVE,
+        level: AlertLevel.NORMAL,
+      },
+      data: {
+        level: AlertLevel.CRITICAL,
+        criticalEscalatedAt: expect.any(Date) as Date,
+      },
+    });
+    expect(tx.alertEvent.create).toHaveBeenNthCalledWith(2, {
+      data: {
+        userId: 'user-id',
+        alertSessionId: 'session-id',
+        type: AlertEventType.ALERT_ESCALATED,
+        message: 'Vera AI escalated the alert to critical.',
+        metadata: expect.objectContaining({
+          confidence: 0.94,
+          confidenceThreshold: 0.78,
+          evidenceAnalysisId: 'analysis-row-id',
+          evidenceRecordId: 'evidence-id',
+          minSignalReasons: 2,
+          policyVersion: 'vera-ai-critical-v1',
+          reasons: expect.arrayContaining([
+            'critical_risk_level',
+            'concrete_threat',
+          ]) as string[],
+          recentHighSignalCount: 0,
+          recommendedAction: 'ESCALATE_CONTACTS',
+          riskLevel: 'CRITICAL',
+        }) as Record<string, unknown>,
+      },
+    });
     expect(result).toMatchObject({
       id: 'analysis-row-id',
       status: EvidenceAnalysisStatus.COMPLETED,
@@ -455,6 +523,96 @@ describe('EvidenceAnalysisService', () => {
       },
     });
     expect(result).not.toHaveProperty('storagePath');
+  });
+
+  it('does not escalate on a single weak signal even when AI suggests escalation', async () => {
+    prisma.evidenceRecord.findFirst.mockResolvedValue(baseEvidence());
+    aiServiceClient.analyzeEvidence.mockResolvedValue(
+      baseAiResult({
+        riskLevel: 'HIGH',
+        confidence: 0.82,
+        detectedSignals: ['active_distress_call'],
+        threatMatches: [],
+        acousticEvents: [{ label: 'cry', confidence: 0.8 }],
+        shouldEscalate: true,
+        recommendedAction: 'ESCALATE_CONTACTS',
+      }),
+    );
+
+    const result = await service.analyze(
+      'user-id',
+      'session-id',
+      'evidence-id',
+    );
+
+    expect(result.suggestedAlertLevel).toBe(AlertLevel.CRITICAL);
+    expect(tx.evidenceAnalysis.count).toHaveBeenCalled();
+    expect(tx.alertSession.updateMany).not.toHaveBeenCalled();
+    expect(tx.alertEvent.create).toHaveBeenCalledTimes(1);
+  });
+
+  it('escalates high risk audio when distress recurs in the temporal window', async () => {
+    prisma.evidenceRecord.findFirst.mockResolvedValue(baseEvidence());
+    tx.evidenceAnalysis.count.mockResolvedValue(1);
+    aiServiceClient.analyzeEvidence.mockResolvedValue(
+      baseAiResult({
+        riskLevel: 'HIGH',
+        confidence: 0.88,
+        detectedSignals: ['active_distress_call'],
+        threatMatches: [],
+        acousticEvents: [],
+        shouldEscalate: true,
+        recommendedAction: 'ESCALATE_CONTACTS',
+      }),
+    );
+
+    await service.analyze('user-id', 'session-id', 'evidence-id');
+
+    expect(tx.evidenceAnalysis.count).toHaveBeenCalledWith({
+      where: expect.objectContaining({
+        id: { not: 'analysis-row-id' },
+        userId: 'user-id',
+        alertSessionId: 'session-id',
+        status: EvidenceAnalysisStatus.COMPLETED,
+      }) as Record<string, unknown>,
+    });
+    expect(tx.alertSession.updateMany).toHaveBeenCalled();
+    expect(tx.alertEvent.create).toHaveBeenNthCalledWith(2, {
+      data: expect.objectContaining({
+        type: AlertEventType.ALERT_ESCALATED,
+        metadata: expect.objectContaining({
+          reasons: expect.arrayContaining([
+            'distress_audio',
+            'temporal_recurrence',
+          ]) as string[],
+          recentHighSignalCount: 1,
+        }) as Record<string, unknown>,
+      }) as Record<string, unknown>,
+    });
+  });
+
+  it('does not persist an escalation event when the active session update is rejected', async () => {
+    prisma.evidenceRecord.findFirst.mockResolvedValue(baseEvidence());
+    tx.alertSession.updateMany.mockResolvedValue({ count: 0 });
+
+    await service.analyze('user-id', 'session-id', 'evidence-id');
+
+    expect(tx.alertSession.updateMany).toHaveBeenCalledWith({
+      where: {
+        id: 'session-id',
+        userId: 'user-id',
+        status: AlertStatus.ACTIVE,
+        level: AlertLevel.NORMAL,
+      },
+      data: {
+        level: AlertLevel.CRITICAL,
+        criticalEscalatedAt: expect.any(Date) as Date,
+      },
+    });
+    expect(tx.alertEvent.create).toHaveBeenCalledTimes(1);
+    expect(tx.alertEvent.create.mock.calls[0]?.[0].data.type).toBe(
+      AlertEventType.AI_ANALYSIS_COMPLETED,
+    );
   });
 
   it('persists inconclusive analysis without critical escalation', async () => {
@@ -488,6 +646,7 @@ describe('EvidenceAnalysisService', () => {
     const inconclusiveEvent = tx.alertEvent.create.mock.calls[0]?.[0];
 
     expect(inconclusiveEvent?.data.message).toBe('AI analysis inconclusive.');
+    expect(tx.alertSession.updateMany).not.toHaveBeenCalled();
     expect(result.status).toBe(EvidenceAnalysisStatus.INCONCLUSIVE);
   });
 
@@ -528,6 +687,7 @@ describe('EvidenceAnalysisService', () => {
       status: EvidenceAnalysisStatus.FAILED,
       failureReason: 'ai_service_http_503',
     });
+    expect(tx.alertSession.updateMany).not.toHaveBeenCalled();
   });
 
   it('persists failed analysis when downloaded evidence hash mismatches', async () => {
