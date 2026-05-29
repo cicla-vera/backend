@@ -7,6 +7,7 @@ import {
 import {
   AlertEventType,
   AlertLevel,
+  AlertStatus,
   EvidenceAnalysisStatus,
   EvidenceType,
   Prisma,
@@ -48,6 +49,30 @@ type EvidenceAnalysisResponse = {
   createdAt: Date;
   updatedAt: Date;
 };
+
+type CriticalEscalationPolicyConfig = {
+  acousticConfidenceThreshold: number;
+  confidenceThreshold: number;
+  minSignalReasons: number;
+  recurrenceMinPrevious: number;
+  recurrenceWindowMs: number;
+  threatConfidenceThreshold: number;
+};
+
+type CriticalEscalationDecision = {
+  shouldEscalate: boolean;
+  reasons: string[];
+  recentHighSignalCount: number;
+  policy: CriticalEscalationPolicyConfig;
+};
+
+const CRITICAL_ESCALATION_POLICY_VERSION = 'vera-ai-critical-v1';
+const DEFAULT_CRITICAL_CONFIDENCE_THRESHOLD = 0.78;
+const DEFAULT_CRITICAL_THREAT_CONFIDENCE_THRESHOLD = 0.7;
+const DEFAULT_CRITICAL_ACOUSTIC_CONFIDENCE_THRESHOLD = 0.72;
+const DEFAULT_CRITICAL_MIN_SIGNAL_REASONS = 2;
+const DEFAULT_CRITICAL_RECURRENCE_WINDOW_MS = 5 * 60 * 1000;
+const DEFAULT_CRITICAL_RECURRENCE_MIN_PREVIOUS = 1;
 
 @Injectable()
 export class EvidenceAnalysisService {
@@ -218,6 +243,24 @@ export class EvidenceAnalysisService {
         },
       });
 
+      const criticalDecision = await this.evaluateCriticalEscalation(tx, {
+        aiResult,
+        evidenceAnalysis,
+        evidenceRecord,
+        status,
+        suggestedAlertLevel,
+        userId,
+      });
+
+      if (criticalDecision.shouldEscalate) {
+        await this.persistCriticalEscalation(tx, {
+          decision: criticalDecision,
+          evidenceAnalysis,
+          evidenceRecord,
+          userId,
+        });
+      }
+
       return evidenceAnalysis;
     });
 
@@ -258,6 +301,336 @@ export class EvidenceAnalysisService {
     });
 
     return this.toResponse(analysis);
+  }
+
+  private async evaluateCriticalEscalation(
+    tx: Prisma.TransactionClient,
+    input: {
+      aiResult: AnalyzeEvidenceResponse;
+      evidenceAnalysis: EvidenceAnalysis;
+      evidenceRecord: EvidenceRecord;
+      status: EvidenceAnalysisStatus;
+      suggestedAlertLevel: AlertLevel;
+      userId: string;
+    },
+  ): Promise<CriticalEscalationDecision> {
+    const policy = this.getCriticalEscalationPolicyConfig();
+    const noEscalation = (
+      reasons: string[] = [],
+      recentHighSignalCount = 0,
+    ): CriticalEscalationDecision => ({
+      shouldEscalate: false,
+      reasons,
+      recentHighSignalCount,
+      policy,
+    });
+
+    if (
+      input.status !== EvidenceAnalysisStatus.COMPLETED ||
+      input.suggestedAlertLevel !== AlertLevel.CRITICAL
+    ) {
+      return noEscalation();
+    }
+
+    if (input.aiResult.confidence < policy.confidenceThreshold) {
+      return noEscalation(['confidence_below_threshold']);
+    }
+
+    const reasons = this.collectCriticalEscalationReasons(
+      input.aiResult,
+      policy,
+    );
+    const recentHighSignalCount = await this.countRecentHighSignalAnalyses(tx, {
+      evidenceAnalysis: input.evidenceAnalysis,
+      evidenceRecord: input.evidenceRecord,
+      policy,
+      userId: input.userId,
+    });
+
+    if (recentHighSignalCount >= policy.recurrenceMinPrevious) {
+      reasons.push('temporal_recurrence');
+    }
+
+    const uniqueReasons = [...new Set(reasons)];
+    const hasAiEscalationIntent =
+      input.aiResult.shouldEscalate ||
+      this.normalize(input.aiResult.recommendedAction) === 'escalate_contacts';
+    const hasDirectCriticalSignal = uniqueReasons.some((reason) =>
+      [
+        'concrete_threat',
+        'critical_risk_level',
+        'criminal_verbal_aggression',
+        'physical_aggression_audio',
+      ].includes(reason),
+    );
+    const hasEnoughSignalReasons =
+      uniqueReasons.length >= policy.minSignalReasons;
+
+    return {
+      shouldEscalate:
+        hasAiEscalationIntent &&
+        (hasDirectCriticalSignal || hasEnoughSignalReasons),
+      reasons: uniqueReasons,
+      recentHighSignalCount,
+      policy,
+    };
+  }
+
+  private async persistCriticalEscalation(
+    tx: Prisma.TransactionClient,
+    input: {
+      decision: CriticalEscalationDecision;
+      evidenceAnalysis: EvidenceAnalysis;
+      evidenceRecord: EvidenceRecord;
+      userId: string;
+    },
+  ): Promise<void> {
+    const updateResult = await tx.alertSession.updateMany({
+      where: {
+        id: input.evidenceRecord.alertSessionId,
+        userId: input.userId,
+        status: AlertStatus.ACTIVE,
+        level: AlertLevel.NORMAL,
+      },
+      data: {
+        level: AlertLevel.CRITICAL,
+        criticalEscalatedAt: new Date(),
+      },
+    });
+
+    if (updateResult.count === 0) {
+      return;
+    }
+
+    await tx.alertEvent.create({
+      data: {
+        userId: input.userId,
+        alertSessionId: input.evidenceRecord.alertSessionId,
+        type: AlertEventType.ALERT_ESCALATED,
+        message: 'Vera AI escalated the alert to critical.',
+        metadata: {
+          confidence: input.evidenceAnalysis.confidence,
+          confidenceThreshold: input.decision.policy.confidenceThreshold,
+          evidenceAnalysisId: input.evidenceAnalysis.id,
+          evidenceRecordId: input.evidenceRecord.id,
+          minSignalReasons: input.decision.policy.minSignalReasons,
+          policyVersion: CRITICAL_ESCALATION_POLICY_VERSION,
+          reasons: input.decision.reasons,
+          recentHighSignalCount: input.decision.recentHighSignalCount,
+          recommendedAction: input.evidenceAnalysis.recommendedAction,
+          riskLevel: input.evidenceAnalysis.riskLevel,
+        },
+      },
+    });
+  }
+
+  private async countRecentHighSignalAnalyses(
+    tx: Prisma.TransactionClient,
+    input: {
+      evidenceAnalysis: EvidenceAnalysis;
+      evidenceRecord: EvidenceRecord;
+      policy: CriticalEscalationPolicyConfig;
+      userId: string;
+    },
+  ): Promise<number> {
+    if (input.policy.recurrenceMinPrevious <= 0) {
+      return 0;
+    }
+
+    return tx.evidenceAnalysis.count({
+      where: {
+        id: { not: input.evidenceAnalysis.id },
+        userId: input.userId,
+        alertSessionId: input.evidenceRecord.alertSessionId,
+        createdAt: {
+          gte: new Date(Date.now() - input.policy.recurrenceWindowMs),
+        },
+        status: EvidenceAnalysisStatus.COMPLETED,
+        OR: [
+          { riskLevel: { in: ['HIGH', 'CRITICAL'] } },
+          { shouldEscalate: true },
+          { suggestedAlertLevel: AlertLevel.CRITICAL },
+        ],
+      },
+    });
+  }
+
+  private collectCriticalEscalationReasons(
+    aiResult: AnalyzeEvidenceResponse,
+    policy: CriticalEscalationPolicyConfig,
+  ): string[] {
+    const reasons: string[] = [];
+
+    if (aiResult.riskLevel === 'CRITICAL') {
+      reasons.push('critical_risk_level');
+    }
+
+    if (this.hasConcreteThreatMatch(aiResult, policy)) {
+      reasons.push('concrete_threat');
+    }
+
+    if (this.hasCriminalVerbalAggression(aiResult)) {
+      reasons.push('criminal_verbal_aggression');
+    }
+
+    if (this.hasPhysicalAggressionAudio(aiResult, policy)) {
+      reasons.push('physical_aggression_audio');
+    }
+
+    if (this.hasDistressAudio(aiResult, policy)) {
+      reasons.push('distress_audio');
+    }
+
+    return reasons;
+  }
+
+  private hasConcreteThreatMatch(
+    aiResult: AnalyzeEvidenceResponse,
+    policy: CriticalEscalationPolicyConfig,
+  ): boolean {
+    return aiResult.threatMatches.some((item) => {
+      const value = this.asRecord(item);
+
+      if (!value) {
+        return false;
+      }
+
+      const severity = this.normalize(this.getUnknownString(value, 'severity'));
+      const confidence =
+        this.getUnknownNumber(value, 'confidence') ?? aiResult.confidence;
+      const text = this.normalize(
+        [
+          this.getUnknownString(value, 'label'),
+          this.getUnknownString(value, 'type'),
+          this.getUnknownString(value, 'category'),
+          this.getUnknownString(value, 'evidence'),
+        ]
+          .filter(Boolean)
+          .join(' '),
+      );
+      const hasThreatKeyword = this.includesAny(text, [
+        'agress',
+        'ameac',
+        'ameaç',
+        'arma',
+        'concrete',
+        'death',
+        'kill',
+        'lethal',
+        'matar',
+        'physical',
+        'threat',
+        'weapon',
+      ]);
+
+      return (
+        confidence >= policy.threatConfidenceThreshold &&
+        (severity === 'critical' ||
+          ((severity === 'high' || !severity) && hasThreatKeyword))
+      );
+    });
+  }
+
+  private hasCriminalVerbalAggression(
+    aiResult: AnalyzeEvidenceResponse,
+  ): boolean {
+    return this.hasDetectedSignal(aiResult, [
+      'agressao_verbal',
+      'agressão_verbal',
+      'ameaca',
+      'ameaça',
+      'criminal_verbal',
+      'grave_verbal',
+      'threat',
+      'verbal_abuse',
+    ]);
+  }
+
+  private hasPhysicalAggressionAudio(
+    aiResult: AnalyzeEvidenceResponse,
+    policy: CriticalEscalationPolicyConfig,
+  ): boolean {
+    return this.hasAcousticEvent(aiResult, policy, [
+      'agress',
+      'agressão',
+      'attack',
+      'batida',
+      'contact',
+      'hit',
+      'impact',
+      'impacto',
+      'punch',
+      'slap',
+      'tapa',
+    ]);
+  }
+
+  private hasDistressAudio(
+    aiResult: AnalyzeEvidenceResponse,
+    policy: CriticalEscalationPolicyConfig,
+  ): boolean {
+    return (
+      this.hasAcousticEvent(aiResult, policy, [
+        'choro',
+        'cry',
+        'distress',
+        'grito',
+        'help',
+        'scream',
+        'sob',
+        'socorro',
+      ]) ||
+      this.hasDetectedSignal(aiResult, [
+        'active_distress_call',
+        'choro',
+        'cry',
+        'distress',
+        'grito',
+        'help',
+        'scream',
+        'socorro',
+      ])
+    );
+  }
+
+  private hasAcousticEvent(
+    aiResult: AnalyzeEvidenceResponse,
+    policy: CriticalEscalationPolicyConfig,
+    keywords: string[],
+  ): boolean {
+    return aiResult.acousticEvents.some((item) => {
+      const value = this.asRecord(item);
+
+      if (!value) {
+        return false;
+      }
+
+      const confidence =
+        this.getUnknownNumber(value, 'confidence') ?? aiResult.confidence;
+      const text = this.normalize(
+        [
+          this.getUnknownString(value, 'label'),
+          this.getUnknownString(value, 'type'),
+          this.getUnknownString(value, 'category'),
+        ]
+          .filter(Boolean)
+          .join(' '),
+      );
+
+      return (
+        confidence >= policy.acousticConfidenceThreshold &&
+        this.includesAny(text, keywords)
+      );
+    });
+  }
+
+  private hasDetectedSignal(
+    aiResult: AnalyzeEvidenceResponse,
+    keywords: string[],
+  ): boolean {
+    return aiResult.detectedSignals.some((signal) =>
+      this.includesAny(this.normalize(signal), keywords),
+    );
   }
 
   private getSuggestedAlertLevel(
@@ -556,6 +929,109 @@ export class EvidenceAnalysisService {
     const date = new Date(value);
 
     return Number.isNaN(date.getTime()) ? undefined : date;
+  }
+
+  private getCriticalEscalationPolicyConfig(): CriticalEscalationPolicyConfig {
+    return {
+      acousticConfidenceThreshold: this.getEnvNumber(
+        'VERA_AI_CRITICAL_ACOUSTIC_CONFIDENCE_THRESHOLD',
+        DEFAULT_CRITICAL_ACOUSTIC_CONFIDENCE_THRESHOLD,
+        0,
+        1,
+      ),
+      confidenceThreshold: this.getEnvNumber(
+        'VERA_AI_CRITICAL_CONFIDENCE_THRESHOLD',
+        DEFAULT_CRITICAL_CONFIDENCE_THRESHOLD,
+        0,
+        1,
+      ),
+      minSignalReasons: this.getEnvInteger(
+        'VERA_AI_CRITICAL_MIN_SIGNAL_REASONS',
+        DEFAULT_CRITICAL_MIN_SIGNAL_REASONS,
+        1,
+        10,
+      ),
+      recurrenceMinPrevious: this.getEnvInteger(
+        'VERA_AI_CRITICAL_RECURRENCE_MIN_PREVIOUS',
+        DEFAULT_CRITICAL_RECURRENCE_MIN_PREVIOUS,
+        0,
+        20,
+      ),
+      recurrenceWindowMs: this.getEnvInteger(
+        'VERA_AI_CRITICAL_RECURRENCE_WINDOW_MS',
+        DEFAULT_CRITICAL_RECURRENCE_WINDOW_MS,
+        30 * 1000,
+        24 * 60 * 60 * 1000,
+      ),
+      threatConfidenceThreshold: this.getEnvNumber(
+        'VERA_AI_CRITICAL_THREAT_CONFIDENCE_THRESHOLD',
+        DEFAULT_CRITICAL_THREAT_CONFIDENCE_THRESHOLD,
+        0,
+        1,
+      ),
+    };
+  }
+
+  private getEnvNumber(
+    name: string,
+    fallback: number,
+    min: number,
+    max: number,
+  ): number {
+    const value = process.env[name];
+
+    if (!value) {
+      return fallback;
+    }
+
+    const parsed = Number(value);
+
+    return Number.isFinite(parsed) && parsed >= min && parsed <= max
+      ? parsed
+      : fallback;
+  }
+
+  private getEnvInteger(
+    name: string,
+    fallback: number,
+    min: number,
+    max: number,
+  ): number {
+    const parsed = this.getEnvNumber(name, fallback, min, max);
+
+    return Number.isInteger(parsed) ? parsed : fallback;
+  }
+
+  private asRecord(value: unknown): Record<string, unknown> | null {
+    return value && typeof value === 'object' && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : null;
+  }
+
+  private getUnknownString(
+    value: Record<string, unknown>,
+    key: string,
+  ): string | null {
+    const item = value[key];
+
+    return typeof item === 'string' ? item : null;
+  }
+
+  private getUnknownNumber(
+    value: Record<string, unknown>,
+    key: string,
+  ): number | null {
+    const item = value[key];
+
+    return typeof item === 'number' && Number.isFinite(item) ? item : null;
+  }
+
+  private includesAny(value: string, keywords: string[]): boolean {
+    return keywords.some((keyword) => value.includes(this.normalize(keyword)));
+  }
+
+  private normalize(value: string | null | undefined): string {
+    return value?.trim().toLowerCase() ?? '';
   }
 
   private getProviderName(
