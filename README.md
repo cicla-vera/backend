@@ -115,3 +115,5 @@ Endpoints úteis:
 
 - `POST /vera/alert-sessions/:alertSessionId/evidence/:id/analyze` inicia a análise síncrona de uma evidência de áudio.
 - `GET /vera/alert-sessions/:alertSessionId/evidence/:id/analysis/latest` retorna o estado mais recente salvo para o mobile consultar.
+- `POST /vera/alert-sessions/:id/location-samples` registra uma amostra ou lote de até 50 localizações consentidas durante sessão ativa. Cada item aceita `latitude`, `longitude`, `capturedAt`, `source`, `accuracyMeters` e `evidenceRecordId` opcional.
+- `GET /vera/alert-sessions/:id/location-samples?limit=100` lista a trilha da sessão em ordem cronológica segura para o app.

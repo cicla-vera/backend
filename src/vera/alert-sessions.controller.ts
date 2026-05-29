@@ -1,8 +1,18 @@
-import { Body, Controller, Get, Param, Post, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  Post,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { JwtGuard } from '../auth/guards/jwt.guard';
+import { AlertLocationSamplesService } from './alert-location-samples.service';
 import { AlertSessionsService } from './alert-sessions.service';
 import { CloseAlertSessionDto } from './dto/close-alert-session.dto';
+import { RecordLocationSamplesDto } from './dto/record-location-samples.dto';
 import { StartLocationAlertSessionDto } from './dto/start-location-alert-session.dto';
 import { StartManualAlertSessionDto } from './dto/start-manual-alert-session.dto';
 import { EmergencyDispatchService } from './emergency-dispatch.service';
@@ -12,6 +22,7 @@ import { EmergencyDispatchService } from './emergency-dispatch.service';
 export class AlertSessionsController {
   constructor(
     private readonly alertSessionsService: AlertSessionsService,
+    private readonly alertLocationSamplesService: AlertLocationSamplesService,
     private readonly emergencyDispatchService: EmergencyDispatchService,
   ) {}
 
@@ -56,5 +67,23 @@ export class AlertSessionsController {
     @Param('id') id: string,
   ) {
     return this.emergencyDispatchService.dispatchCriticalAlert(user.sub, id);
+  }
+
+  @Post(':id/location-samples')
+  recordLocationSamples(
+    @CurrentUser() user: { sub: string },
+    @Param('id') id: string,
+    @Body() dto: RecordLocationSamplesDto,
+  ) {
+    return this.alertLocationSamplesService.recordSamples(user.sub, id, dto);
+  }
+
+  @Get(':id/location-samples')
+  findLocationSamples(
+    @CurrentUser() user: { sub: string },
+    @Param('id') id: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.alertLocationSamplesService.findAll(user.sub, id, limit);
   }
 }
