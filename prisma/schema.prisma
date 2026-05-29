@@ -320,8 +320,11 @@ enum EvidenceAuditAction {
 }
 
 enum EvidenceAnalysisStatus {
+  QUEUED
+  PROCESSING
   COMPLETED
   FAILED
+  INCONCLUSIVE
 }
 
 model SafetyProfile {
@@ -469,22 +472,34 @@ model EvidenceAuditEvent {
 }
 
 model EvidenceAnalysis {
-  id                  String                 @id @default(uuid())
-  userId              String
-  user                User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
-  alertSessionId      String
-  alertSession        AlertSession           @relation(fields: [alertSessionId], references: [id], onDelete: Cascade)
-  evidenceRecordId    String
-  evidenceRecord      EvidenceRecord         @relation(fields: [evidenceRecordId], references: [id], onDelete: Cascade)
-  status              EvidenceAnalysisStatus
-  riskLevel           String?
-  suggestedAlertLevel AlertLevel?
-  confidence          Float?
-  summary             String?
-  detectedSignals     Json?
-  shouldEscalate      Boolean?
-  failureReason       String?
-  createdAt           DateTime               @default(now())
+  id                   String                 @id @default(uuid())
+  analysisId           String?
+  analysisVersion      String?
+  userId               String
+  user                 User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  alertSessionId       String
+  alertSession         AlertSession           @relation(fields: [alertSessionId], references: [id], onDelete: Cascade)
+  evidenceRecordId     String
+  evidenceRecord       EvidenceRecord         @relation(fields: [evidenceRecordId], references: [id], onDelete: Cascade)
+  status               EvidenceAnalysisStatus
+  riskLevel            String?
+  suggestedAlertLevel  AlertLevel?
+  confidence           Float?
+  summary              String?
+  detectedSignals      Json?
+  shouldEscalate       Boolean?
+  recommendedAction    String?
+  evidenceWindow       Json?
+  transcription        Json?
+  acousticEvents       Json?
+  threatMatches        Json?
+  providerMetadata     Json?
+  processingStartedAt  DateTime?
+  processingFinishedAt DateTime?
+  latencyMs            Int?
+  failureReason        String?
+  createdAt            DateTime               @default(now())
+  updatedAt            DateTime               @updatedAt
 
   @@index([userId, createdAt])
   @@index([alertSessionId, createdAt])
