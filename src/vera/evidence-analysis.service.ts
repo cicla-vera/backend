@@ -21,6 +21,7 @@ import {
   type AnalyzeEvidenceResponse,
 } from '../ai/ai-service.client';
 import { PrismaService } from '../prisma/prisma.service';
+import { EmergencyDispatchService } from './emergency-dispatch.service';
 import { EvidenceStorageService } from './evidence-storage.service';
 
 type EvidenceAnalysisResponse = {
@@ -80,6 +81,7 @@ export class EvidenceAnalysisService {
     private prisma: PrismaService,
     private aiServiceClient: AiServiceClient,
     private evidenceStorage: EvidenceStorageService,
+    private emergencyDispatchService: EmergencyDispatchService,
   ) {}
 
   async analyze(
@@ -216,6 +218,7 @@ export class EvidenceAnalysisService {
   ): Promise<EvidenceAnalysisResponse> {
     const status = this.getPersistedStatus(aiResult);
     const suggestedAlertLevel = this.getSuggestedAlertLevel(aiResult);
+    let shouldDispatchCriticalContacts = false;
     const analysis = await this.prisma.$transaction(async (tx) => {
       const evidenceAnalysis = await tx.evidenceAnalysis.update({
         where: { id: evidenceAnalysisId },
@@ -253,16 +256,26 @@ export class EvidenceAnalysisService {
       });
 
       if (criticalDecision.shouldEscalate) {
-        await this.persistCriticalEscalation(tx, {
-          decision: criticalDecision,
-          evidenceAnalysis,
-          evidenceRecord,
-          userId,
-        });
+        shouldDispatchCriticalContacts = await this.persistCriticalEscalation(
+          tx,
+          {
+            decision: criticalDecision,
+            evidenceAnalysis,
+            evidenceRecord,
+            userId,
+          },
+        );
       }
 
       return evidenceAnalysis;
     });
+
+    if (shouldDispatchCriticalContacts) {
+      await this.dispatchCriticalContactsSafely(
+        userId,
+        evidenceRecord.alertSessionId,
+      );
+    }
 
     return this.toResponse(analysis);
   }
@@ -384,7 +397,7 @@ export class EvidenceAnalysisService {
       evidenceRecord: EvidenceRecord;
       userId: string;
     },
-  ): Promise<void> {
+  ): Promise<boolean> {
     const updateResult = await tx.alertSession.updateMany({
       where: {
         id: input.evidenceRecord.alertSessionId,
@@ -399,7 +412,7 @@ export class EvidenceAnalysisService {
     });
 
     if (updateResult.count === 0) {
-      return;
+      return false;
     }
 
     await tx.alertEvent.create({
@@ -422,6 +435,24 @@ export class EvidenceAnalysisService {
         },
       },
     });
+
+    return true;
+  }
+
+  private async dispatchCriticalContactsSafely(
+    userId: string,
+    alertSessionId: string,
+  ): Promise<void> {
+    try {
+      await this.emergencyDispatchService.dispatchCriticalAlert(
+        userId,
+        alertSessionId,
+        { source: 'ai_escalation' },
+      );
+    } catch {
+      // Escalation and evidence analysis are already persisted. Unexpected
+      // dispatch failures must not roll back the custody/analysis result.
+    }
   }
 
   private async countRecentHighSignalAnalyses(
