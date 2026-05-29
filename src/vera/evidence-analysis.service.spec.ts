@@ -1,4 +1,8 @@
-import { NotFoundException, ServiceUnavailableException } from '@nestjs/common';
+import {
+  BadRequestException,
+  NotFoundException,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import {
   AlertEventType,
   AlertLevel,
@@ -8,9 +12,14 @@ import {
   type EvidenceAnalysis,
   type EvidenceRecord,
 } from '@prisma/client';
-import { AiServiceClient } from '../ai/ai-service.client';
+import { createHash } from 'node:crypto';
+import {
+  AiServiceClient,
+  type AnalyzeEvidenceResponse,
+} from '../ai/ai-service.client';
 import { PrismaService } from '../prisma/prisma.service';
 import { EvidenceAnalysisService } from './evidence-analysis.service';
+import { EvidenceStorageService } from './evidence-storage.service';
 
 type EvidenceRecordFindFirstArgs = {
   where: {
@@ -28,14 +37,21 @@ type EvidenceAnalysisCreateArgs = {
     alertSessionId: string;
     evidenceRecordId: string;
     status: EvidenceAnalysisStatus;
-    riskLevel?: string;
-    suggestedAlertLevel?: AlertLevel;
-    confidence?: number;
-    summary?: string;
-    detectedSignals?: string[];
-    shouldEscalate?: boolean;
-    failureReason?: string;
   };
+};
+
+type EvidenceAnalysisUpdateArgs = {
+  where: { id: string };
+  data: Record<string, unknown>;
+};
+
+type EvidenceAnalysisFindFirstArgs = {
+  where: {
+    userId: string;
+    alertSessionId: string;
+    evidenceRecordId: string;
+  };
+  orderBy: [{ createdAt: 'desc' }, { id: 'desc' }];
 };
 
 type AlertEventCreateArgs = {
@@ -50,7 +66,7 @@ type AlertEventCreateArgs = {
 
 type TransactionClientMock = {
   evidenceAnalysis: {
-    create: jest.Mock<Promise<EvidenceAnalysis>, [EvidenceAnalysisCreateArgs]>;
+    update: jest.Mock<Promise<EvidenceAnalysis>, [EvidenceAnalysisUpdateArgs]>;
   };
   alertEvent: {
     create: jest.Mock<Promise<AlertEvent>, [AlertEventCreateArgs]>;
@@ -68,6 +84,14 @@ type PrismaMock = {
       [EvidenceRecordFindFirstArgs]
     >;
   };
+  evidenceAnalysis: {
+    create: jest.Mock<Promise<EvidenceAnalysis>, [EvidenceAnalysisCreateArgs]>;
+    update: jest.Mock<Promise<EvidenceAnalysis>, [EvidenceAnalysisUpdateArgs]>;
+    findFirst: jest.Mock<
+      Promise<EvidenceAnalysis | null>,
+      [EvidenceAnalysisFindFirstArgs]
+    >;
+  };
   $transaction: jest.Mock<Promise<EvidenceAnalysis>, [TransactionCallback]>;
 };
 
@@ -78,6 +102,23 @@ type AiServiceClientMock = {
   >;
 };
 
+type EvidenceStorageMock = {
+  downloadEvidence: jest.Mock<
+    ReturnType<EvidenceStorageService['downloadEvidence']>,
+    Parameters<EvidenceStorageService['downloadEvidence']>
+  >;
+};
+
+const audioBuffer = Buffer.from('audio-bytes');
+const audioHash = createHash('sha256').update(audioBuffer).digest('hex');
+
+const toArrayBuffer = (buffer: Buffer): ArrayBuffer => {
+  return buffer.buffer.slice(
+    buffer.byteOffset,
+    buffer.byteOffset + buffer.byteLength,
+  );
+};
+
 const baseEvidence = (
   overrides: Partial<EvidenceRecord> = {},
 ): EvidenceRecord => ({
@@ -85,11 +126,11 @@ const baseEvidence = (
   userId: 'user-id',
   alertSessionId: 'session-id',
   type: EvidenceType.AUDIO,
-  size: 512,
+  size: audioBuffer.byteLength,
   mimeType: 'audio/wav',
   originalName: 'audio.wav',
   storagePath: 'users/user-id/alert-sessions/session-id/audio.wav',
-  contentHash: 'a'.repeat(64),
+  contentHash: audioHash,
   hashAlgorithm: 'SHA-256',
   hashedAt: new Date('2026-05-24T00:00:00.000Z'),
   hiddenFromUserAt: null,
@@ -103,7 +144,9 @@ const baseEvidence = (
 const baseAnalysis = (
   overrides: Partial<EvidenceAnalysis> = {},
 ): EvidenceAnalysis => ({
-  id: 'analysis-id',
+  id: 'analysis-row-id',
+  analysisId: 'ai-analysis-id',
+  analysisVersion: 'audio-evidence-v1',
   userId: 'user-id',
   alertSessionId: 'session-id',
   evidenceRecordId: 'evidence-id',
@@ -111,11 +154,21 @@ const baseAnalysis = (
   riskLevel: 'CRITICAL',
   suggestedAlertLevel: AlertLevel.CRITICAL,
   confidence: 0.94,
-  summary: 'Possible immediate danger detected.',
-  detectedSignals: ['threatening_language'],
+  summary: 'Critical risk candidate detected.',
+  detectedSignals: ['risk_level:CRITICAL'],
   shouldEscalate: true,
+  recommendedAction: 'ESCALATE_CONTACTS',
+  evidenceWindow: { durationMs: 12000 },
+  transcription: { text: 'Eu vou te matar agora.' },
+  acousticEvents: [],
+  threatMatches: [{ label: 'concrete_lethal_threat' }],
+  providerMetadata: { provider: 'mock' },
+  processingStartedAt: new Date('2026-05-28T10:00:00.000Z'),
+  processingFinishedAt: new Date('2026-05-28T10:00:01.000Z'),
+  latencyMs: 1000,
   failureReason: null,
   createdAt: new Date('2026-05-24T00:00:00.000Z'),
+  updatedAt: new Date('2026-05-24T00:00:01.000Z'),
   ...overrides,
 });
 
@@ -132,18 +185,51 @@ const baseEvent = (overrides: Partial<AlertEvent> = {}): AlertEvent => ({
   ...overrides,
 });
 
+const baseAiResult = (
+  overrides: Partial<AnalyzeEvidenceResponse> = {},
+): AnalyzeEvidenceResponse => ({
+  analysisId: 'ai-analysis-id',
+  analysisVersion: 'audio-evidence-v1',
+  status: 'COMPLETED',
+  riskLevel: 'CRITICAL',
+  confidence: 0.94,
+  summary: 'Critical risk candidate detected.',
+  detectedSignals: ['risk_level:CRITICAL'],
+  shouldEscalate: true,
+  recommendedAction: 'ESCALATE_CONTACTS',
+  evidenceWindow: { startedAt: null, endedAt: null, durationMs: null },
+  transcription: {
+    text: 'Eu vou te matar agora.',
+    language: 'pt-BR',
+    segments: [],
+  },
+  acousticEvents: [],
+  threatMatches: [{ label: 'concrete_lethal_threat' }],
+  providerMetadata: {
+    provider: 'mock',
+    model: 'mock-transcription',
+    modelVersion: 'mock-transcription',
+  },
+  processingStartedAt: '2026-05-28T10:00:00.000Z',
+  processingFinishedAt: '2026-05-28T10:00:01.000Z',
+  latencyMs: 1000,
+  failureReason: null,
+  ...overrides,
+});
+
 describe('EvidenceAnalysisService', () => {
   let service: EvidenceAnalysisService;
   let prisma: PrismaMock;
   let tx: TransactionClientMock;
   let aiServiceClient: AiServiceClientMock;
+  let evidenceStorage: EvidenceStorageMock;
 
   beforeEach(() => {
     tx = {
       evidenceAnalysis: {
-        create: jest.fn<
+        update: jest.fn<
           Promise<EvidenceAnalysis>,
-          [EvidenceAnalysisCreateArgs]
+          [EvidenceAnalysisUpdateArgs]
         >(),
       },
       alertEvent: {
@@ -157,6 +243,20 @@ describe('EvidenceAnalysisService', () => {
           [EvidenceRecordFindFirstArgs]
         >(),
       },
+      evidenceAnalysis: {
+        create: jest.fn<
+          Promise<EvidenceAnalysis>,
+          [EvidenceAnalysisCreateArgs]
+        >(),
+        update: jest.fn<
+          Promise<EvidenceAnalysis>,
+          [EvidenceAnalysisUpdateArgs]
+        >(),
+        findFirst: jest.fn<
+          Promise<EvidenceAnalysis | null>,
+          [EvidenceAnalysisFindFirstArgs]
+        >(),
+      },
       $transaction: jest.fn<Promise<EvidenceAnalysis>, [TransactionCallback]>(),
     };
     aiServiceClient = {
@@ -165,42 +265,108 @@ describe('EvidenceAnalysisService', () => {
         Parameters<AiServiceClient['analyzeEvidence']>
       >(),
     };
+    evidenceStorage = {
+      downloadEvidence: jest.fn<
+        ReturnType<EvidenceStorageService['downloadEvidence']>,
+        Parameters<EvidenceStorageService['downloadEvidence']>
+      >(),
+    };
 
     prisma.$transaction.mockImplementation((callback) => callback(tx));
-    tx.evidenceAnalysis.create.mockImplementation(({ data }) => {
+    prisma.evidenceAnalysis.create.mockImplementation(({ data }) => {
       return Promise.resolve(
         baseAnalysis({
+          id: 'analysis-row-id',
+          analysisId: null,
+          analysisVersion: null,
           userId: data.userId,
           alertSessionId: data.alertSessionId,
           evidenceRecordId: data.evidenceRecordId,
           status: data.status,
-          riskLevel: data.riskLevel ?? null,
-          suggestedAlertLevel: data.suggestedAlertLevel ?? null,
-          confidence: data.confidence ?? null,
-          summary: data.summary ?? null,
+          riskLevel: null,
+          suggestedAlertLevel: null,
+          confidence: null,
+          summary: null,
+          detectedSignals: null,
+          shouldEscalate: null,
+          recommendedAction: null,
+          evidenceWindow: null,
+          transcription: null,
+          acousticEvents: null,
+          threatMatches: null,
+          providerMetadata: null,
+          processingStartedAt: null,
+          processingFinishedAt: null,
+          latencyMs: null,
+          failureReason: null,
+        }),
+      );
+    });
+    prisma.evidenceAnalysis.update.mockImplementation(({ data }) => {
+      return Promise.resolve(
+        baseAnalysis({
+          status: data.status as EvidenceAnalysisStatus,
+        }),
+      );
+    });
+    tx.evidenceAnalysis.update.mockImplementation(({ data }) => {
+      return Promise.resolve(
+        baseAnalysis({
+          analysisId: (data.analysisId as string | undefined) ?? null,
+          analysisVersion: (data.analysisVersion as string | undefined) ?? null,
+          status: data.status as EvidenceAnalysisStatus,
+          riskLevel: (data.riskLevel as string | undefined) ?? null,
+          suggestedAlertLevel:
+            (data.suggestedAlertLevel as AlertLevel | undefined) ?? null,
+          confidence: (data.confidence as number | undefined) ?? null,
+          summary: (data.summary as string | undefined) ?? null,
           detectedSignals: data.detectedSignals ?? null,
-          shouldEscalate: data.shouldEscalate ?? null,
-          failureReason: data.failureReason ?? null,
+          shouldEscalate: (data.shouldEscalate as boolean | undefined) ?? null,
+          recommendedAction:
+            (data.recommendedAction as string | undefined) ?? null,
+          evidenceWindow: data.evidenceWindow ?? null,
+          transcription: data.transcription ?? null,
+          acousticEvents: data.acousticEvents ?? null,
+          threatMatches: data.threatMatches ?? null,
+          providerMetadata: data.providerMetadata ?? null,
+          processingStartedAt:
+            (data.processingStartedAt as Date | undefined) ?? null,
+          processingFinishedAt:
+            (data.processingFinishedAt as Date | undefined) ?? null,
+          latencyMs: (data.latencyMs as number | undefined) ?? null,
+          failureReason: (data.failureReason as string | undefined) ?? null,
         }),
       );
     });
     tx.alertEvent.create.mockResolvedValue(baseEvent());
-    aiServiceClient.analyzeEvidence.mockResolvedValue({
-      riskLevel: 'CRITICAL',
-      confidence: 0.94,
-      summary: 'Possible immediate danger detected.',
-      detectedSignals: ['threatening_language'],
-      shouldEscalate: true,
+    evidenceStorage.downloadEvidence.mockResolvedValue({
+      bucket: 'vera-evidence',
+      path: 'users/user-id/alert-sessions/session-id/audio.wav',
+      contentType: 'audio/wav',
+      size: audioBuffer.byteLength,
+      body: toArrayBuffer(audioBuffer),
     });
+    aiServiceClient.analyzeEvidence.mockResolvedValue(baseAiResult());
 
     service = new EvidenceAnalysisService(
       prisma as unknown as PrismaService,
       aiServiceClient as unknown as AiServiceClient,
+      evidenceStorage as unknown as EvidenceStorageService,
     );
   });
 
-  it('analyzes user-owned evidence and persists the completed result', async () => {
-    prisma.evidenceRecord.findFirst.mockResolvedValue(baseEvidence());
+  it('analyzes audio evidence and persists the completed rich result', async () => {
+    prisma.evidenceRecord.findFirst.mockResolvedValue(
+      baseEvidence({
+        metadata: {
+          captureStartedAt: '2026-05-28T10:00:00Z',
+          captureEndedAt: '2026-05-28T10:00:12Z',
+          triggerReasons: 'voice_activity,volume_spike',
+          latitude: -3.7319,
+          longitude: -38.5267,
+        },
+      }),
+    );
 
     const result = await service.analyze(
       'user-id',
@@ -208,36 +374,54 @@ describe('EvidenceAnalysisService', () => {
       'evidence-id',
     );
 
-    expect(prisma.evidenceRecord.findFirst).toHaveBeenCalledWith({
-      where: {
-        id: 'evidence-id',
+    expect(prisma.evidenceAnalysis.create).toHaveBeenCalledWith({
+      data: {
         userId: 'user-id',
         alertSessionId: 'session-id',
-        hiddenFromUserAt: null,
-        deletedAt: null,
+        evidenceRecordId: 'evidence-id',
+        status: EvidenceAnalysisStatus.QUEUED,
       },
     });
+    expect(prisma.evidenceAnalysis.update).toHaveBeenCalledWith({
+      where: { id: 'analysis-row-id' },
+      data: { status: EvidenceAnalysisStatus.PROCESSING },
+    });
+    expect(evidenceStorage.downloadEvidence).toHaveBeenCalledWith(
+      'users/user-id/alert-sessions/session-id/audio.wav',
+    );
     expect(aiServiceClient.analyzeEvidence).toHaveBeenCalledWith({
       evidenceRecordId: 'evidence-id',
       alertSessionId: 'session-id',
       evidenceType: EvidenceType.AUDIO,
       mimeType: 'audio/wav',
-      size: 512,
-      contentHash: 'a'.repeat(64),
-    });
-    expect(tx.evidenceAnalysis.create).toHaveBeenCalledWith({
-      data: {
-        userId: 'user-id',
-        alertSessionId: 'session-id',
-        evidenceRecordId: 'evidence-id',
-        status: EvidenceAnalysisStatus.COMPLETED,
-        riskLevel: 'CRITICAL',
-        suggestedAlertLevel: AlertLevel.CRITICAL,
-        confidence: 0.94,
-        summary: 'Possible immediate danger detected.',
-        detectedSignals: ['threatening_language'],
-        shouldEscalate: true,
+      size: audioBuffer.byteLength,
+      contentHash: audioHash,
+      storageReference: `data:audio/wav;base64,${audioBuffer.toString('base64')}`,
+      captureContext: {
+        captureStartedAt: '2026-05-28T10:00:00Z',
+        captureEndedAt: '2026-05-28T10:00:12Z',
+        triggerReasons: ['voice_activity', 'volume_spike'],
+        location: {
+          latitude: -3.7319,
+          longitude: -38.5267,
+        },
       },
+    });
+    const completedUpdate = tx.evidenceAnalysis.update.mock.calls[0]?.[0];
+
+    expect(completedUpdate?.where).toEqual({ id: 'analysis-row-id' });
+    expect(completedUpdate?.data).toMatchObject({
+      analysisId: 'ai-analysis-id',
+      analysisVersion: 'audio-evidence-v1',
+      status: EvidenceAnalysisStatus.COMPLETED,
+      riskLevel: 'CRITICAL',
+      suggestedAlertLevel: AlertLevel.CRITICAL,
+      confidence: 0.94,
+      summary: 'Critical risk candidate detected.',
+      detectedSignals: ['risk_level:CRITICAL'],
+      shouldEscalate: true,
+      recommendedAction: 'ESCALATE_CONTACTS',
+      failureReason: null,
     });
     expect(tx.alertEvent.create).toHaveBeenCalledWith({
       data: {
@@ -247,33 +431,44 @@ describe('EvidenceAnalysisService', () => {
         message: 'AI analysis completed.',
         metadata: {
           status: EvidenceAnalysisStatus.COMPLETED,
-          evidenceAnalysisId: 'analysis-id',
+          evidenceAnalysisId: 'analysis-row-id',
           evidenceRecordId: 'evidence-id',
           riskLevel: 'CRITICAL',
           confidence: 0.94,
           shouldEscalate: true,
+          recommendedAction: 'ESCALATE_CONTACTS',
           suggestedAlertLevel: AlertLevel.CRITICAL,
+          failureReason: null,
+          provider: 'mock',
         },
       },
     });
     expect(result).toMatchObject({
-      id: 'analysis-id',
+      id: 'analysis-row-id',
       status: EvidenceAnalysisStatus.COMPLETED,
       suggestedAlertLevel: AlertLevel.CRITICAL,
       shouldEscalate: true,
+      transcription: {
+        text: 'Eu vou te matar agora.',
+        language: 'pt-BR',
+        segments: [],
+      },
     });
     expect(result).not.toHaveProperty('storagePath');
   });
 
-  it('suggests normal alert level without changing the alert session', async () => {
+  it('persists inconclusive analysis without critical escalation', async () => {
     prisma.evidenceRecord.findFirst.mockResolvedValue(baseEvidence());
-    aiServiceClient.analyzeEvidence.mockResolvedValue({
-      riskLevel: 'LOW',
-      confidence: 0.72,
-      summary: 'No critical signal detected.',
-      detectedSignals: [],
-      shouldEscalate: false,
-    });
+    aiServiceClient.analyzeEvidence.mockResolvedValue(
+      baseAiResult({
+        status: 'INCONCLUSIVE',
+        riskLevel: 'UNKNOWN',
+        confidence: 0,
+        shouldEscalate: false,
+        recommendedAction: 'REVIEW',
+        transcription: { text: '', language: 'pt-BR', segments: [] },
+      }),
+    );
 
     const result = await service.analyze(
       'user-id',
@@ -281,20 +476,22 @@ describe('EvidenceAnalysisService', () => {
       'evidence-id',
     );
 
-    const createArgs = tx.evidenceAnalysis.create.mock.calls[0]?.[0];
+    const inconclusiveUpdate = tx.evidenceAnalysis.update.mock.calls[0]?.[0];
 
-    if (!createArgs) {
-      throw new Error('Expected evidence analysis create call');
-    }
+    expect(inconclusiveUpdate?.where).toEqual({ id: 'analysis-row-id' });
+    expect(inconclusiveUpdate?.data).toMatchObject({
+      status: EvidenceAnalysisStatus.INCONCLUSIVE,
+      riskLevel: 'UNKNOWN',
+      suggestedAlertLevel: AlertLevel.NORMAL,
+      shouldEscalate: false,
+    });
+    const inconclusiveEvent = tx.alertEvent.create.mock.calls[0]?.[0];
 
-    expect(createArgs.data.status).toBe(EvidenceAnalysisStatus.COMPLETED);
-    expect(createArgs.data.suggestedAlertLevel).toBe(AlertLevel.NORMAL);
-    expect(createArgs.data.riskLevel).toBe('LOW');
-    expect(createArgs.data.shouldEscalate).toBe(false);
-    expect(result.suggestedAlertLevel).toBe(AlertLevel.NORMAL);
+    expect(inconclusiveEvent?.data.message).toBe('AI analysis inconclusive.');
+    expect(result.status).toBe(EvidenceAnalysisStatus.INCONCLUSIVE);
   });
 
-  it('persists failed analysis when the AI service fails', async () => {
+  it('persists failed analysis when the AI service throws', async () => {
     prisma.evidenceRecord.findFirst.mockResolvedValue(baseEvidence());
     aiServiceClient.analyzeEvidence.mockRejectedValue(
       new ServiceUnavailableException('AI service is not configured.'),
@@ -306,11 +503,9 @@ describe('EvidenceAnalysisService', () => {
       'evidence-id',
     );
 
-    expect(tx.evidenceAnalysis.create).toHaveBeenCalledWith({
+    expect(tx.evidenceAnalysis.update).toHaveBeenCalledWith({
+      where: { id: 'analysis-row-id' },
       data: {
-        userId: 'user-id',
-        alertSessionId: 'session-id',
-        evidenceRecordId: 'evidence-id',
         status: EvidenceAnalysisStatus.FAILED,
         failureReason: 'ai_service_http_503',
       },
@@ -323,7 +518,7 @@ describe('EvidenceAnalysisService', () => {
         message: 'AI analysis failed.',
         metadata: {
           status: EvidenceAnalysisStatus.FAILED,
-          evidenceAnalysisId: 'analysis-id',
+          evidenceAnalysisId: 'analysis-row-id',
           evidenceRecordId: 'evidence-id',
           failureReason: 'ai_service_http_503',
         },
@@ -335,6 +530,75 @@ describe('EvidenceAnalysisService', () => {
     });
   });
 
+  it('persists failed analysis when downloaded evidence hash mismatches', async () => {
+    prisma.evidenceRecord.findFirst.mockResolvedValue(baseEvidence());
+    evidenceStorage.downloadEvidence.mockResolvedValue({
+      bucket: 'vera-evidence',
+      path: 'users/user-id/alert-sessions/session-id/audio.wav',
+      contentType: 'audio/wav',
+      size: 5,
+      body: toArrayBuffer(Buffer.from('wrong')),
+    });
+
+    const result = await service.analyze(
+      'user-id',
+      'session-id',
+      'evidence-id',
+    );
+
+    expect(aiServiceClient.analyzeEvidence).not.toHaveBeenCalled();
+    expect(tx.evidenceAnalysis.update).toHaveBeenCalledWith({
+      where: { id: 'analysis-row-id' },
+      data: {
+        status: EvidenceAnalysisStatus.FAILED,
+        failureReason: 'stored_content_hash_mismatch',
+      },
+    });
+    expect(result.failureReason).toBe('stored_content_hash_mismatch');
+  });
+
+  it('rejects non-audio evidence before creating an analysis row', async () => {
+    prisma.evidenceRecord.findFirst.mockResolvedValue(
+      baseEvidence({
+        type: EvidenceType.IMAGE,
+        mimeType: 'image/jpeg',
+      }),
+    );
+
+    await expect(
+      service.analyze('user-id', 'session-id', 'evidence-id'),
+    ).rejects.toBeInstanceOf(BadRequestException);
+
+    expect(prisma.evidenceAnalysis.create).not.toHaveBeenCalled();
+    expect(aiServiceClient.analyzeEvidence).not.toHaveBeenCalled();
+  });
+
+  it('finds the latest analysis for visible evidence', async () => {
+    prisma.evidenceRecord.findFirst.mockResolvedValue(baseEvidence());
+    prisma.evidenceAnalysis.findFirst.mockResolvedValue(
+      baseAnalysis({ id: 'latest-analysis-id' }),
+    );
+
+    const result = await service.findLatest(
+      'user-id',
+      'session-id',
+      'evidence-id',
+    );
+
+    expect(prisma.evidenceAnalysis.findFirst).toHaveBeenCalledWith({
+      where: {
+        userId: 'user-id',
+        alertSessionId: 'session-id',
+        evidenceRecordId: 'evidence-id',
+      },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+    });
+    expect(result).toMatchObject({
+      id: 'latest-analysis-id',
+      status: EvidenceAnalysisStatus.COMPLETED,
+    });
+  });
+
   it('does not analyze evidence from another user or hidden evidence', async () => {
     prisma.evidenceRecord.findFirst.mockResolvedValue(null);
 
@@ -343,7 +607,7 @@ describe('EvidenceAnalysisService', () => {
     ).rejects.toBeInstanceOf(NotFoundException);
 
     expect(aiServiceClient.analyzeEvidence).not.toHaveBeenCalled();
-    expect(tx.evidenceAnalysis.create).not.toHaveBeenCalled();
+    expect(prisma.evidenceAnalysis.create).not.toHaveBeenCalled();
     expect(tx.alertEvent.create).not.toHaveBeenCalled();
   });
 });

@@ -62,11 +62,43 @@ describe('AiServiceClient', () => {
     fetchMock.mockResolvedValue(
       new Response(
         JSON.stringify({
+          analysisId: 'mock-analysis-evidence-id',
+          analysisVersion: 'audio-evidence-v1',
+          status: 'COMPLETED',
           riskLevel: 'critical',
           confidence: 0.94,
           summary: 'Possible immediate danger detected.',
           detectedSignals: ['threatening_language', 'impact_sound'],
           shouldEscalate: true,
+          recommendedAction: 'ESCALATE_CONTACTS',
+          evidenceWindow: {
+            startedAt: null,
+            endedAt: null,
+            durationMs: null,
+          },
+          transcription: {
+            text: 'Eu vou te matar.',
+            language: 'pt-BR',
+            segments: [],
+          },
+          acousticEvents: [],
+          threatMatches: [
+            {
+              label: 'concrete_lethal_threat',
+              severity: 'CRITICAL',
+              confidence: 0.95,
+              evidence: 'vou te matar',
+            },
+          ],
+          providerMetadata: {
+            provider: 'mock',
+            model: 'mock-transcription',
+            modelVersion: 'mock-transcription',
+          },
+          processingStartedAt: '2026-05-28T10:00:00.000Z',
+          processingFinishedAt: '2026-05-28T10:00:01.000Z',
+          latencyMs: 1000,
+          failureReason: null,
         }),
         { status: 200 },
       ),
@@ -79,6 +111,7 @@ describe('AiServiceClient', () => {
       mimeType: 'audio/wav',
       size: 512,
       contentHash: 'a'.repeat(64),
+      storageReference: 'data:audio/wav;base64,YXVkaW8=',
     });
 
     const call = fetchMock.mock.calls[0];
@@ -106,13 +139,46 @@ describe('AiServiceClient', () => {
       mimeType: 'audio/wav',
       size: 512,
       contentHash: 'a'.repeat(64),
+      storageReference: 'data:audio/wav;base64,YXVkaW8=',
     });
     expect(result).toEqual({
+      analysisId: 'mock-analysis-evidence-id',
+      analysisVersion: 'audio-evidence-v1',
+      status: 'COMPLETED',
       riskLevel: 'CRITICAL',
       confidence: 0.94,
       summary: 'Possible immediate danger detected.',
       detectedSignals: ['threatening_language', 'impact_sound'],
       shouldEscalate: true,
+      recommendedAction: 'ESCALATE_CONTACTS',
+      evidenceWindow: {
+        startedAt: null,
+        endedAt: null,
+        durationMs: null,
+      },
+      transcription: {
+        text: 'Eu vou te matar.',
+        language: 'pt-BR',
+        segments: [],
+      },
+      acousticEvents: [],
+      threatMatches: [
+        {
+          label: 'concrete_lethal_threat',
+          severity: 'CRITICAL',
+          confidence: 0.95,
+          evidence: 'vou te matar',
+        },
+      ],
+      providerMetadata: {
+        provider: 'mock',
+        model: 'mock-transcription',
+        modelVersion: 'mock-transcription',
+      },
+      processingStartedAt: '2026-05-28T10:00:00.000Z',
+      processingFinishedAt: '2026-05-28T10:00:01.000Z',
+      latencyMs: 1000,
+      failureReason: null,
     });
   });
 
@@ -139,11 +205,28 @@ describe('AiServiceClient', () => {
     fetchMock.mockResolvedValue(
       new Response(
         JSON.stringify({
+          analysisId: 'mock-analysis-evidence-id',
+          analysisVersion: 'audio-evidence-v1',
+          status: 'COMPLETED',
           riskLevel: 'critical',
           confidence: '0.94',
           summary: 'Invalid payload',
           detectedSignals: [],
           shouldEscalate: true,
+          recommendedAction: 'ESCALATE_CONTACTS',
+          evidenceWindow: {},
+          transcription: null,
+          acousticEvents: [],
+          threatMatches: [],
+          providerMetadata: {
+            provider: 'mock',
+            model: 'mock-transcription',
+            modelVersion: 'mock-transcription',
+          },
+          processingStartedAt: '2026-05-28T10:00:00.000Z',
+          processingFinishedAt: '2026-05-28T10:00:01.000Z',
+          latencyMs: 1000,
+          failureReason: null,
         }),
         { status: 200 },
       ),

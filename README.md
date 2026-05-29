@@ -104,3 +104,10 @@ O envio de SMS usa `EMERGENCY_SMS_PROVIDER=mock` por padrão em desenvolvimento/
 ## Serviço de IA
 
 O backend conversa com o microsserviço Python/FastAPI por `AI_SERVICE_URL`. O cliente HTTP usa timeout configurável em `AI_SERVICE_TIMEOUT_MS` e traduz falhas externas em exceptions controladas, para que upload, alerta e mobile não dependam de erro bruto do serviço de IA.
+
+Para analisar áudio, o backend baixa a evidência do Storage privado, confere o hash salvo e envia o conteúdo ao `ai-service` como `storageReference` em `data:` URL. A resposta `audio-evidence-v1` é persistida com estados `QUEUED`, `PROCESSING`, `COMPLETED`, `FAILED` ou `INCONCLUSIVE`, além de transcrição, eventos acústicos, `riskLevel`, `recommendedAction`, metadados do provider e motivo seguro de falha. O conteúdo bruto da evidência não é retornado para contatos de emergência nem gravado em eventos de timeline.
+
+Endpoints úteis:
+
+- `POST /vera/alert-sessions/:alertSessionId/evidence/:id/analyze` inicia a análise síncrona de uma evidência de áudio.
+- `GET /vera/alert-sessions/:alertSessionId/evidence/:id/analysis/latest` retorna o estado mais recente salvo para o mobile consultar.
