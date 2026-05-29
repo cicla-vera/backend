@@ -19,6 +19,7 @@ import {
   type AnalyzeEvidenceResponse,
 } from '../ai/ai-service.client';
 import { PrismaService } from '../prisma/prisma.service';
+import { EmergencyDispatchService } from './emergency-dispatch.service';
 import { EvidenceAnalysisService } from './evidence-analysis.service';
 import { EvidenceStorageService } from './evidence-storage.service';
 
@@ -130,6 +131,13 @@ type EvidenceStorageMock = {
   downloadEvidence: jest.Mock<
     ReturnType<EvidenceStorageService['downloadEvidence']>,
     Parameters<EvidenceStorageService['downloadEvidence']>
+  >;
+};
+
+type EmergencyDispatchServiceMock = {
+  dispatchCriticalAlert: jest.Mock<
+    ReturnType<EmergencyDispatchService['dispatchCriticalAlert']>,
+    Parameters<EmergencyDispatchService['dispatchCriticalAlert']>
   >;
 };
 
@@ -247,6 +255,7 @@ describe('EvidenceAnalysisService', () => {
   let tx: TransactionClientMock;
   let aiServiceClient: AiServiceClientMock;
   let evidenceStorage: EvidenceStorageMock;
+  let emergencyDispatchService: EmergencyDispatchServiceMock;
 
   beforeEach(() => {
     tx = {
@@ -300,6 +309,12 @@ describe('EvidenceAnalysisService', () => {
       downloadEvidence: jest.fn<
         ReturnType<EvidenceStorageService['downloadEvidence']>,
         Parameters<EvidenceStorageService['downloadEvidence']>
+      >(),
+    };
+    emergencyDispatchService = {
+      dispatchCriticalAlert: jest.fn<
+        ReturnType<EmergencyDispatchService['dispatchCriticalAlert']>,
+        Parameters<EmergencyDispatchService['dispatchCriticalAlert']>
       >(),
     };
 
@@ -380,11 +395,19 @@ describe('EvidenceAnalysisService', () => {
       body: toArrayBuffer(audioBuffer),
     });
     aiServiceClient.analyzeEvidence.mockResolvedValue(baseAiResult());
+    emergencyDispatchService.dispatchCriticalAlert.mockResolvedValue({
+      alreadyDispatched: false,
+      alertSessionId: 'session-id',
+      level: AlertLevel.CRITICAL,
+      providerConfigured: true,
+      attempts: [],
+    });
 
     service = new EvidenceAnalysisService(
       prisma as unknown as PrismaService,
       aiServiceClient as unknown as AiServiceClient,
       evidenceStorage as unknown as EvidenceStorageService,
+      emergencyDispatchService as unknown as EmergencyDispatchService,
     );
   });
 
@@ -511,6 +534,11 @@ describe('EvidenceAnalysisService', () => {
         }) as Record<string, unknown>,
       },
     });
+    expect(emergencyDispatchService.dispatchCriticalAlert).toHaveBeenCalledWith(
+      'user-id',
+      'session-id',
+      { source: 'ai_escalation' },
+    );
     expect(result).toMatchObject({
       id: 'analysis-row-id',
       status: EvidenceAnalysisStatus.COMPLETED,
@@ -549,6 +577,9 @@ describe('EvidenceAnalysisService', () => {
     expect(tx.evidenceAnalysis.count).toHaveBeenCalled();
     expect(tx.alertSession.updateMany).not.toHaveBeenCalled();
     expect(tx.alertEvent.create).toHaveBeenCalledTimes(1);
+    expect(
+      emergencyDispatchService.dispatchCriticalAlert,
+    ).not.toHaveBeenCalled();
   });
 
   it('escalates high risk audio when distress recurs in the temporal window', async () => {
@@ -589,6 +620,11 @@ describe('EvidenceAnalysisService', () => {
         }) as Record<string, unknown>,
       }) as Record<string, unknown>,
     });
+    expect(emergencyDispatchService.dispatchCriticalAlert).toHaveBeenCalledWith(
+      'user-id',
+      'session-id',
+      { source: 'ai_escalation' },
+    );
   });
 
   it('does not persist an escalation event when the active session update is rejected', async () => {
@@ -613,6 +649,26 @@ describe('EvidenceAnalysisService', () => {
     expect(tx.alertEvent.create.mock.calls[0]?.[0].data.type).toBe(
       AlertEventType.AI_ANALYSIS_COMPLETED,
     );
+    expect(
+      emergencyDispatchService.dispatchCriticalAlert,
+    ).not.toHaveBeenCalled();
+  });
+
+  it('keeps the analysis result when automatic contact dispatch throws unexpectedly', async () => {
+    prisma.evidenceRecord.findFirst.mockResolvedValue(baseEvidence());
+    emergencyDispatchService.dispatchCriticalAlert.mockRejectedValue(
+      new Error('dispatch unavailable'),
+    );
+
+    const result = await service.analyze(
+      'user-id',
+      'session-id',
+      'evidence-id',
+    );
+
+    expect(result.status).toBe(EvidenceAnalysisStatus.COMPLETED);
+    expect(tx.alertSession.updateMany).toHaveBeenCalled();
+    expect(emergencyDispatchService.dispatchCriticalAlert).toHaveBeenCalled();
   });
 
   it('persists inconclusive analysis without critical escalation', async () => {
