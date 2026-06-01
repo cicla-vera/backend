@@ -28,12 +28,15 @@ export class CyclesPredictionService {
       }),
     ]);
 
-    if (cycles.length === 0) {
+    const completeCycles = cycles.filter((cycle) => cycle.endDate !== null);
+
+    if (completeCycles.length === 0) {
       return {
         nextPeriod: null,
         ovulationDate: null,
         fertileWindow: null,
-        message: 'Not enough data to predict. Log at least one cycle.',
+        message:
+          'Not enough data to predict. Log at least one complete cycle (with start and end dates).',
       };
     }
 

@@ -58,12 +58,26 @@ describe('CyclesPredictionService', () => {
       nextPeriod: null,
       ovulationDate: null,
       fertileWindow: null,
-      message: 'Not enough data to predict. Log at least one cycle.',
+      message:
+        'Not enough data to predict. Log at least one complete cycle (with start and end dates).',
     });
   });
 
-  it('uses profile avgCycleLength when only one cycle exists', async () => {
+  it('returns an empty prediction when only an incomplete cycle exists', async () => {
     cycleLog.findMany.mockResolvedValue([cycle('2026-05-10')]);
+    profile.findUnique.mockResolvedValue({ avgCycleLength: 30 });
+
+    await expect(service.predict('user-id')).resolves.toEqual({
+      nextPeriod: null,
+      ovulationDate: null,
+      fertileWindow: null,
+      message:
+        'Not enough data to predict. Log at least one complete cycle (with start and end dates).',
+    });
+  });
+
+  it('uses profile avgCycleLength when one complete cycle exists', async () => {
+    cycleLog.findMany.mockResolvedValue([cycle('2026-05-10', '2026-05-15')]);
     profile.findUnique.mockResolvedValue({ avgCycleLength: 30 });
 
     await expect(service.predict('user-id')).resolves.toMatchObject({
@@ -101,8 +115,8 @@ describe('CyclesPredictionService', () => {
     });
   });
 
-  it('falls back to 28 days when no profile data and only one cycle exists', async () => {
-    cycleLog.findMany.mockResolvedValue([cycle('2026-05-10')]);
+  it('falls back to 28 days when no profile data and one complete cycle exists', async () => {
+    cycleLog.findMany.mockResolvedValue([cycle('2026-05-10', '2026-05-15')]);
     profile.findUnique.mockResolvedValue(null);
 
     await expect(service.predict('user-id')).resolves.toMatchObject({
