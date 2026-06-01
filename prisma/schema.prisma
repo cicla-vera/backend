@@ -36,6 +36,7 @@ model User {
   safetyLocations        SafetyLocation[]
   alertSessions          AlertSession[]
   alertEvents            AlertEvent[]
+  alertLocationSamples   AlertLocationSample[]
   evidenceRecords        EvidenceRecord[]
   evidenceAuditEvents    EvidenceAuditEvent[]
   evidenceAnalyses       EvidenceAnalysis[]
@@ -298,6 +299,7 @@ enum AlertLevel {
 enum AlertEventType {
   SESSION_STARTED
   LOCATION_ENTERED
+  LOCATION_UPDATED
   EVIDENCE_UPLOADED
   AI_ANALYSIS_COMPLETED
   ALERT_ESCALATED
@@ -319,9 +321,18 @@ enum EvidenceAuditAction {
   HIDDEN_FROM_USER
 }
 
+enum LocationSampleSource {
+  FOREGROUND
+  BACKGROUND
+  UNKNOWN
+}
+
 enum EvidenceAnalysisStatus {
+  QUEUED
+  PROCESSING
   COMPLETED
   FAILED
+  INCONCLUSIVE
 }
 
 model SafetyProfile {
@@ -375,22 +386,23 @@ model SafetyLocation {
 }
 
 model AlertSession {
-  id                  String             @id @default(uuid())
+  id                  String                @id @default(uuid())
   userId              String
-  user                User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user                User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
   safetyLocationId    String?
-  safetyLocation      SafetyLocation?    @relation(fields: [safetyLocationId], references: [id], onDelete: SetNull)
+  safetyLocation      SafetyLocation?       @relation(fields: [safetyLocationId], references: [id], onDelete: SetNull)
   trigger             AlertTrigger
-  status              AlertStatus        @default(ACTIVE)
-  level               AlertLevel         @default(NORMAL)
-  startedAt           DateTime           @default(now())
+  status              AlertStatus           @default(ACTIVE)
+  level               AlertLevel            @default(NORMAL)
+  startedAt           DateTime              @default(now())
   endedAt             DateTime?
   criticalEscalatedAt DateTime?
   initialLatitude     Float?
   initialLongitude    Float?
-  createdAt           DateTime           @default(now())
-  updatedAt           DateTime           @updatedAt
+  createdAt           DateTime              @default(now())
+  updatedAt           DateTime              @updatedAt
   events              AlertEvent[]
+  locationSamples     AlertLocationSample[]
   evidenceRecords     EvidenceRecord[]
   evidenceAnalyses    EvidenceAnalysis[]
 
@@ -418,27 +430,53 @@ model AlertEvent {
   @@index([type])
 }
 
+model AlertLocationSample {
+  id                   String               @id @default(uuid())
+  userId               String
+  user                 User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  alertSessionId       String
+  alertSession         AlertSession         @relation(fields: [alertSessionId], references: [id], onDelete: Cascade)
+  evidenceRecordId     String?
+  evidenceRecord       EvidenceRecord?      @relation(fields: [evidenceRecordId], references: [id], onDelete: SetNull)
+  latitude             Float
+  longitude            Float
+  accuracyMeters       Float?
+  altitudeMeters       Float?
+  speedMetersPerSecond Float?
+  headingDegrees       Float?
+  source               LocationSampleSource @default(UNKNOWN)
+  capturedAt           DateTime
+  metadata             Json?
+  createdAt            DateTime             @default(now())
+
+  @@index([userId, capturedAt])
+  @@index([alertSessionId, capturedAt])
+  @@index([evidenceRecordId])
+  @@index([source])
+}
+
 model EvidenceRecord {
-  id               String               @id @default(uuid())
+  id               String                @id @default(uuid())
   userId           String
-  user             User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user             User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
   alertSessionId   String
-  alertSession     AlertSession         @relation(fields: [alertSessionId], references: [id], onDelete: Cascade)
+  alertSession     AlertSession          @relation(fields: [alertSessionId], references: [id], onDelete: Cascade)
   type             EvidenceType
   size             Int
   mimeType         String
   originalName     String?
-  storagePath      String               @unique
+  storagePath      String                @unique
   contentHash      String
-  hashAlgorithm    String               @default("SHA-256")
-  hashedAt         DateTime             @default(now())
+  hashAlgorithm    String                @default("SHA-256")
+  hashedAt         DateTime              @default(now())
   hiddenFromUserAt DateTime?
   retentionUntil   DateTime?
   deletedAt        DateTime?
   metadata         Json?
-  createdAt        DateTime             @default(now())
+  createdAt        DateTime              @default(now())
   auditEvents      EvidenceAuditEvent[]
   analyses         EvidenceAnalysis[]
+  locationSamples  AlertLocationSample[]
 
   @@index([userId, createdAt])
   @@index([userId, hiddenFromUserAt])
@@ -469,22 +507,34 @@ model EvidenceAuditEvent {
 }
 
 model EvidenceAnalysis {
-  id                  String                 @id @default(uuid())
-  userId              String
-  user                User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
-  alertSessionId      String
-  alertSession        AlertSession           @relation(fields: [alertSessionId], references: [id], onDelete: Cascade)
-  evidenceRecordId    String
-  evidenceRecord      EvidenceRecord         @relation(fields: [evidenceRecordId], references: [id], onDelete: Cascade)
-  status              EvidenceAnalysisStatus
-  riskLevel           String?
-  suggestedAlertLevel AlertLevel?
-  confidence          Float?
-  summary             String?
-  detectedSignals     Json?
-  shouldEscalate      Boolean?
-  failureReason       String?
-  createdAt           DateTime               @default(now())
+  id                   String                 @id @default(uuid())
+  analysisId           String?
+  analysisVersion      String?
+  userId               String
+  user                 User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  alertSessionId       String
+  alertSession         AlertSession           @relation(fields: [alertSessionId], references: [id], onDelete: Cascade)
+  evidenceRecordId     String
+  evidenceRecord       EvidenceRecord         @relation(fields: [evidenceRecordId], references: [id], onDelete: Cascade)
+  status               EvidenceAnalysisStatus
+  riskLevel            String?
+  suggestedAlertLevel  AlertLevel?
+  confidence           Float?
+  summary              String?
+  detectedSignals      Json?
+  shouldEscalate       Boolean?
+  recommendedAction    String?
+  evidenceWindow       Json?
+  transcription        Json?
+  acousticEvents       Json?
+  threatMatches        Json?
+  providerMetadata     Json?
+  processingStartedAt  DateTime?
+  processingFinishedAt DateTime?
+  latencyMs            Int?
+  failureReason        String?
+  createdAt            DateTime               @default(now())
+  updatedAt            DateTime               @updatedAt
 
   @@index([userId, createdAt])
   @@index([alertSessionId, createdAt])

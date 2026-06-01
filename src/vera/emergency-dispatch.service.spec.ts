@@ -38,6 +38,27 @@ type EmergencyContactFindManyArgs = {
   orderBy: [{ priority: 'asc' }, { createdAt: 'asc' }];
 };
 
+type AlertEventFindManyArgs = {
+  where: {
+    userId: string;
+    alertSessionId: string;
+    type: {
+      in: AlertEventType[];
+    };
+  };
+  orderBy: { createdAt: 'asc' };
+};
+
+type AlertEventFindFirstArgs = {
+  where: {
+    userId: string;
+    alertSessionId: string;
+    latitude: { not: null };
+    longitude: { not: null };
+  };
+  orderBy: { createdAt: 'desc' };
+};
+
 type AlertEventCreateArgs = {
   data: {
     userId: string;
@@ -62,6 +83,8 @@ type PrismaMock = {
     >;
   };
   alertEvent: {
+    findMany: jest.Mock<Promise<AlertEvent[]>, [AlertEventFindManyArgs]>;
+    findFirst: jest.Mock<Promise<AlertEvent | null>, [AlertEventFindFirstArgs]>;
     create: jest.Mock<Promise<AlertEvent>, [AlertEventCreateArgs]>;
   };
 };
@@ -150,6 +173,9 @@ const baseEvent = (overrides: Partial<AlertEvent> = {}): AlertEvent => ({
   ...overrides,
 });
 
+const emergencyMessage =
+  'Alerta Vera: Ana pode estar em perigo agora. Local aproximado: -3.732, -38.527. Tente contato imediatamente e acione a policia ou emergencia local se nao conseguir confirmar que ela esta segura.';
+
 describe('EmergencyDispatchService', () => {
   let service: EmergencyDispatchService;
   let prisma: PrismaMock;
@@ -170,6 +196,11 @@ describe('EmergencyDispatchService', () => {
         >(),
       },
       alertEvent: {
+        findMany: jest.fn<Promise<AlertEvent[]>, [AlertEventFindManyArgs]>(),
+        findFirst: jest.fn<
+          Promise<AlertEvent | null>,
+          [AlertEventFindFirstArgs]
+        >(),
         create: jest.fn<Promise<AlertEvent>, [AlertEventCreateArgs]>(),
       },
     };
@@ -179,6 +210,8 @@ describe('EmergencyDispatchService', () => {
         Parameters<MessagingProviderService['sendSms']>
       >(),
     };
+    prisma.alertEvent.findMany.mockResolvedValue([]);
+    prisma.alertEvent.findFirst.mockResolvedValue(null);
     prisma.alertEvent.create.mockResolvedValue(baseEvent());
     messagingProvider.sendSms.mockResolvedValue(failedDelivery());
     service = new EmergencyDispatchService(
@@ -212,7 +245,7 @@ describe('EmergencyDispatchService', () => {
     });
     expect(messagingProvider.sendSms).toHaveBeenNthCalledWith(1, {
       to: '+5585999999999',
-      body: 'Ana may be in danger and needs help. Approximate location: -3.732, -38.527. Please try to contact her and call local emergency services if needed.',
+      body: emergencyMessage,
     });
     expect(prisma.alertEvent.create).toHaveBeenCalledTimes(2);
     expect(prisma.alertEvent.create).toHaveBeenNthCalledWith(1, {
@@ -224,15 +257,17 @@ describe('EmergencyDispatchService', () => {
         metadata: {
           contactId: 'contact-low',
           contactPriority: 1,
+          dispatchKind: 'critical_alert_contacts',
+          dispatchSource: 'manual',
           deliveryChannel: 'sms',
           provider: 'unconfigured',
           reason: 'sms_provider_not_configured',
           status: 'failed',
-          message:
-            'Ana may be in danger and needs help. Approximate location: -3.732, -38.527. Please try to contact her and call local emergency services if needed.',
+          message: emergencyMessage,
         },
       },
     });
+    expect(result.alreadyDispatched).toBe(false);
     expect(result.providerConfigured).toBe(false);
     expect(result.attempts).toHaveLength(2);
     expect(result.attempts[0]).toMatchObject({
@@ -261,15 +296,17 @@ describe('EmergencyDispatchService', () => {
         metadata: {
           contactId: 'contact-id',
           contactPriority: 0,
+          dispatchKind: 'critical_alert_contacts',
+          dispatchSource: 'manual',
           deliveryChannel: 'sms',
           provider: 'mock',
           providerMessageId: 'mock-message-id',
           status: 'sent',
-          message:
-            'Ana may be in danger and needs help. Approximate location: -3.732, -38.527. Please try to contact her and call local emergency services if needed.',
+          message: emergencyMessage,
         },
       },
     });
+    expect(result.alreadyDispatched).toBe(false);
     expect(result.providerConfigured).toBe(true);
     expect(result.attempts[0]).toMatchObject({
       eventType: AlertEventType.CONTACT_NOTIFIED,
@@ -291,9 +328,94 @@ describe('EmergencyDispatchService', () => {
         alertSessionId: 'session-id',
         type: AlertEventType.CONTACT_NOTIFICATION_FAILED,
         message: 'No active emergency contacts configured.',
-        metadata: { reason: 'no_active_contacts' },
+        metadata: {
+          dispatchKind: 'critical_alert_contacts',
+          dispatchSource: 'manual',
+          reason: 'no_active_contacts',
+        },
       },
     });
+    expect(result.alreadyDispatched).toBe(false);
+    expect(result.attempts).toEqual([]);
+  });
+
+  it('does not duplicate notifications for contacts already notified', async () => {
+    prisma.alertSession.findFirst.mockResolvedValue(baseSession());
+    prisma.emergencyContact.findMany.mockResolvedValue([baseContact()]);
+    prisma.alertEvent.findMany.mockResolvedValue([
+      baseEvent({
+        type: AlertEventType.CONTACT_NOTIFIED,
+        metadata: {
+          contactId: 'contact-id',
+          message: emergencyMessage,
+          provider: 'mock',
+          providerMessageId: 'mock-message-id',
+          status: 'sent',
+        },
+      }),
+    ]);
+
+    const result = await service.dispatchCriticalAlert('user-id', 'session-id');
+
+    expect(messagingProvider.sendSms).not.toHaveBeenCalled();
+    expect(prisma.alertEvent.create).not.toHaveBeenCalled();
+    expect(result.alreadyDispatched).toBe(true);
+    expect(result.attempts).toEqual([
+      expect.objectContaining({
+        contactId: 'contact-id',
+        eventType: AlertEventType.CONTACT_NOTIFIED,
+        provider: 'mock',
+        providerMessageId: 'mock-message-id',
+        reason: 'already_notified',
+        status: 'sent',
+      }),
+    ]);
+  });
+
+  it('uses the latest session location event when dispatching contacts', async () => {
+    prisma.alertSession.findFirst.mockResolvedValue(baseSession());
+    prisma.emergencyContact.findMany.mockResolvedValue([baseContact()]);
+    prisma.alertEvent.findFirst.mockResolvedValue(
+      baseEvent({
+        latitude: -3.72,
+        longitude: -38.51,
+      }),
+    );
+    messagingProvider.sendSms.mockResolvedValue(sentDelivery());
+
+    await service.dispatchCriticalAlert('user-id', 'session-id', {
+      source: 'ai_escalation',
+    });
+
+    expect(messagingProvider.sendSms).toHaveBeenCalledWith({
+      to: '+5585999999999',
+      body: 'Alerta Vera: Ana pode estar em perigo agora. Local aproximado: -3.720, -38.510. Tente contato imediatamente e acione a policia ou emergencia local se nao conseguir confirmar que ela esta segura.',
+    });
+    expect(prisma.alertEvent.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        metadata: expect.objectContaining({
+          dispatchSource: 'ai_escalation',
+        }) as Record<string, unknown>,
+      }) as Record<string, unknown>,
+    });
+  });
+
+  it('does not duplicate the no-contact failure marker', async () => {
+    prisma.alertSession.findFirst.mockResolvedValue(baseSession());
+    prisma.emergencyContact.findMany.mockResolvedValue([]);
+    prisma.alertEvent.findMany.mockResolvedValue([
+      baseEvent({
+        type: AlertEventType.CONTACT_NOTIFICATION_FAILED,
+        metadata: {
+          reason: 'no_active_contacts',
+        },
+      }),
+    ]);
+
+    const result = await service.dispatchCriticalAlert('user-id', 'session-id');
+
+    expect(prisma.alertEvent.create).not.toHaveBeenCalled();
+    expect(result.alreadyDispatched).toBe(true);
     expect(result.attempts).toEqual([]);
   });
 
