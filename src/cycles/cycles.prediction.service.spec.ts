@@ -7,45 +7,42 @@ type CycleForPrediction = {
   duration: number;
 };
 
-type CycleLogFindManyArgs = {
-  where: {
-    userId: string;
-    endDate: { not: null };
-  };
-  orderBy: { startDate: 'desc' };
-  take: number;
+type ProfileDelegateMock = {
+  findUnique: jest.Mock;
 };
 
 type CycleLogDelegateMock = {
-  findMany: jest.Mock<Promise<CycleForPrediction[]>, [CycleLogFindManyArgs]>;
+  findMany: jest.Mock;
 };
 
 const cycle = (
   startDate: string,
-  endDate: string,
+  endDate?: string,
   duration = 5,
-): CycleForPrediction => ({
+): any => ({
   startDate: new Date(`${startDate}T00:00:00.000Z`),
-  endDate: new Date(`${endDate}T00:00:00.000Z`),
-  duration,
+  endDate: endDate ? new Date(`${endDate}T00:00:00.000Z`) : null,
+  duration: endDate ? duration : null,
 });
 
 describe('CyclesPredictionService', () => {
   let service: CyclesPredictionService;
   let cycleLog: CycleLogDelegateMock;
+  let profile: ProfileDelegateMock;
 
   beforeEach(() => {
     jest.useFakeTimers();
     jest.setSystemTime(new Date('2026-05-24T12:00:00.000Z'));
 
     cycleLog = {
-      findMany: jest.fn<
-        Promise<CycleForPrediction[]>,
-        [CycleLogFindManyArgs]
-      >(),
+      findMany: jest.fn(),
     };
 
-    const prisma = { cycleLog } as unknown as PrismaService;
+    profile = {
+      findUnique: jest.fn(),
+    };
+
+    const prisma = { cycleLog, profile } as unknown as PrismaService;
     service = new CyclesPredictionService(prisma);
   });
 
@@ -53,20 +50,27 @@ describe('CyclesPredictionService', () => {
     jest.useRealTimers();
   });
 
-  it('returns an empty prediction when no complete cycles exist', async () => {
+  it('returns an empty prediction when no cycles exist', async () => {
     cycleLog.findMany.mockResolvedValue([]);
+    profile.findUnique.mockResolvedValue(null);
 
     await expect(service.predict('user-id')).resolves.toEqual({
       nextPeriod: null,
       ovulationDate: null,
       fertileWindow: null,
-      message: 'Not enough data to predict. Log at least one complete cycle.',
+      message: 'Not enough data to predict. Log at least one cycle.',
     });
+  });
 
-    expect(cycleLog.findMany).toHaveBeenCalledWith({
-      where: { userId: 'user-id', endDate: { not: null } },
-      orderBy: { startDate: 'desc' },
-      take: 6,
+  it('uses profile avgCycleLength when only one cycle exists', async () => {
+    cycleLog.findMany.mockResolvedValue([cycle('2026-05-10')]);
+    profile.findUnique.mockResolvedValue({ avgCycleLength: 30 });
+
+    await expect(service.predict('user-id')).resolves.toMatchObject({
+      averageCycleLength: 30,
+      nextPeriod: {
+        date: '2026-06-09',
+      },
     });
   });
 
@@ -76,6 +80,7 @@ describe('CyclesPredictionService', () => {
       cycle('2026-04-10', '2026-04-15', 5),
       cycle('2026-03-13', '2026-03-18', 5),
     ]);
+    profile.findUnique.mockResolvedValue({ avgCycleLength: 28 });
 
     await expect(service.predict('user-id')).resolves.toEqual({
       averageCycleLength: 29,
@@ -96,8 +101,9 @@ describe('CyclesPredictionService', () => {
     });
   });
 
-  it('falls back to 28 days when only one complete cycle exists', async () => {
-    cycleLog.findMany.mockResolvedValue([cycle('2026-05-10', '2026-05-14', 4)]);
+  it('falls back to 28 days when no profile data and only one cycle exists', async () => {
+    cycleLog.findMany.mockResolvedValue([cycle('2026-05-10')]);
+    profile.findUnique.mockResolvedValue(null);
 
     await expect(service.predict('user-id')).resolves.toMatchObject({
       averageCycleLength: 28,

@@ -31,8 +31,20 @@ export class AuthService {
         profile: {
           create: {
             name: dto.name,
+            phone: dto.phone,
+            birthDate: dto.birthDate ? new Date(dto.birthDate) : null,
+            cpf: dto.cpf,
+            avgCycleLength: dto.initialCycleData?.avgCycleLength,
+            avgPeriodDuration: dto.initialCycleData?.avgPeriodDuration,
           },
         },
+        ...(dto.initialCycleData?.lastPeriodDate && {
+          cycleLogs: {
+            create: {
+              startDate: new Date(dto.initialCycleData.lastPeriodDate),
+            },
+          },
+        }),
       },
       include: {
         profile: true,
