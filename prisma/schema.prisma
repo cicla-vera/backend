@@ -516,7 +516,13 @@ model EvidenceAnalysis {
   alertSession         AlertSession           @relation(fields: [alertSessionId], references: [id], onDelete: Cascade)
   evidenceRecordId     String
   evidenceRecord       EvidenceRecord         @relation(fields: [evidenceRecordId], references: [id], onDelete: Cascade)
+  requestKey           String?                @unique
   status               EvidenceAnalysisStatus
+  attemptCount         Int                    @default(0)
+  maxAttempts          Int                    @default(3)
+  nextAttemptAt        DateTime?              @default(now())
+  lockedAt             DateTime?
+  lastAttemptAt        DateTime?
   riskLevel            String?
   suggestedAlertLevel  AlertLevel?
   confidence           Float?
@@ -540,5 +546,7 @@ model EvidenceAnalysis {
   @@index([alertSessionId, createdAt])
   @@index([evidenceRecordId, createdAt])
   @@index([status])
+  @@index([status, nextAttemptAt])
+  @@index([status, lockedAt])
   @@index([suggestedAlertLevel])
 }

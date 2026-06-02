@@ -11,6 +11,7 @@ import { EmergencyContactsService } from './emergency-contacts.service';
 import { EmergencyDispatchService } from './emergency-dispatch.service';
 import { EvidenceController } from './evidence.controller';
 import { EvidenceAnalysisService } from './evidence-analysis.service';
+import { EvidenceAnalysisWorkerService } from './evidence-analysis-worker.service';
 import { EvidenceService } from './evidence.service';
 import { EvidenceStorageService } from './evidence-storage.service';
 import { MessagingProviderService } from './messaging-provider.service';
@@ -43,6 +44,7 @@ import { VeraService } from './vera.service';
     EmergencyDispatchService,
     MessagingProviderService,
     EvidenceAnalysisService,
+    EvidenceAnalysisWorkerService,
     EvidenceService,
     EvidenceStorageService,
   ],
