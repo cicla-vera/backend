@@ -101,6 +101,19 @@ Evidências removidas pelo app são ocultadas da visão da usuária, mas o arqui
 
 O envio de SMS usa `EMERGENCY_SMS_PROVIDER=mock` por padrão em desenvolvimento/testes, sem chamada externa. Para envio real, configure `EMERGENCY_SMS_PROVIDER=twilio`, `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN` e `TWILIO_FROM_PHONE_NUMBER`; tokens nunca devem aparecer em logs, respostas ou commits.
 
+Quando uma sessão Vera entra em `CRITICAL`, o backend dispara automaticamente os contatos ativos com uma mensagem segura em português, orientação para acionar polícia/emergência local e localização aproximada quando disponível. O dispatch é idempotente por contato: contatos já notificados não recebem duplicatas em novas tentativas, e nenhum áudio, transcrição, foto, vídeo ou arquivo bruto é enviado para terceiros.
+
 ## Serviço de IA
 
 O backend conversa com o microsserviço Python/FastAPI por `AI_SERVICE_URL`. O cliente HTTP usa timeout configurável em `AI_SERVICE_TIMEOUT_MS` e traduz falhas externas em exceptions controladas, para que upload, alerta e mobile não dependam de erro bruto do serviço de IA.
+
+Para analisar áudio, o backend enfileira uma solicitação idempotente por evidência e responde sem aguardar o provedor externo. Um worker durável baseado no banco baixa a evidência do Storage privado, confere o hash salvo e envia o conteúdo ao `ai-service` como `storageReference` em `data:` URL. Falhas transitórias usam retry exponencial e jobs `PROCESSING` abandonados são recuperados após o timeout de lock. A resposta `audio-evidence-v1` é persistida com estados `QUEUED`, `PROCESSING`, `COMPLETED`, `FAILED` ou `INCONCLUSIVE`, além de transcrição, eventos acústicos, `riskLevel`, `recommendedAction`, metadados do provider e motivo seguro de falha. O conteúdo bruto da evidência não é retornado para contatos de emergência nem gravado em eventos de timeline.
+
+Quando a análise concluída sugere escalonamento crítico, o backend aplica uma política conservadora antes de mudar a sessão para `CRITICAL`. Por padrão, exige confiança mínima `0.78` e sinais fortes como ameaça concreta, agressão verbal criminosa, impacto físico, gritos/choro/pedido de socorro combinados ou recorrência recente. A decisão grava um evento `ALERT_ESCALATED` com motivos auditáveis, sem transcrição bruta. Os thresholds podem ser ajustados por `VERA_AI_CRITICAL_*` no `.env`.
+
+Endpoints úteis:
+
+- `POST /vera/alert-sessions/:alertSessionId/evidence/:id/analyze` enfileira a análise assíncrona de uma evidência de áudio e retorna `202 Accepted`.
+- `GET /vera/alert-sessions/:alertSessionId/evidence/:id/analysis/latest` retorna o estado mais recente salvo para o mobile consultar.
+- `POST /vera/alert-sessions/:id/location-samples` registra uma amostra ou lote de até 50 localizações consentidas durante sessão ativa. Cada item aceita `latitude`, `longitude`, `capturedAt`, `source`, `accuracyMeters` e `evidenceRecordId` opcional.
+- `GET /vera/alert-sessions/:id/location-samples?limit=100` lista a trilha da sessão em ordem cronológica segura para o app.

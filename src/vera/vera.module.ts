@@ -3,6 +3,7 @@ import { AuthModule } from '../auth/auth.module';
 import { AiModule } from '../ai/ai.module';
 import { AlertEventsController } from './alert-events.controller';
 import { AlertEventsService } from './alert-events.service';
+import { AlertLocationSamplesService } from './alert-location-samples.service';
 import { AlertSessionsController } from './alert-sessions.controller';
 import { AlertSessionsService } from './alert-sessions.service';
 import { EmergencyContactsController } from './emergency-contacts.controller';
@@ -10,6 +11,7 @@ import { EmergencyContactsService } from './emergency-contacts.service';
 import { EmergencyDispatchService } from './emergency-dispatch.service';
 import { EvidenceController } from './evidence.controller';
 import { EvidenceAnalysisService } from './evidence-analysis.service';
+import { EvidenceAnalysisWorkerService } from './evidence-analysis-worker.service';
 import { EvidenceService } from './evidence.service';
 import { EvidenceStorageService } from './evidence-storage.service';
 import { MessagingProviderService } from './messaging-provider.service';
@@ -37,10 +39,12 @@ import { VeraService } from './vera.service';
     SafetyLocationsService,
     VeraPinService,
     AlertSessionsService,
+    AlertLocationSamplesService,
     AlertEventsService,
     EmergencyDispatchService,
     MessagingProviderService,
     EvidenceAnalysisService,
+    EvidenceAnalysisWorkerService,
     EvidenceService,
     EvidenceStorageService,
   ],
@@ -50,6 +54,7 @@ import { VeraService } from './vera.service';
     SafetyLocationsService,
     VeraPinService,
     AlertSessionsService,
+    AlertLocationSamplesService,
     AlertEventsService,
     EmergencyDispatchService,
     MessagingProviderService,

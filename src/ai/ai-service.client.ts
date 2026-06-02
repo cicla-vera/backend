@@ -22,14 +22,47 @@ export type AnalyzeEvidenceInput = {
   mimeType: string;
   size: number;
   contentHash: string;
+  storageReference?: string;
+  captureContext?: AnalyzeEvidenceCaptureContext;
+};
+
+export type AnalyzeEvidenceCaptureContext = {
+  captureStartedAt?: string;
+  captureEndedAt?: string;
+  triggeredAt?: string;
+  preRollMs?: number;
+  postRollMs?: number;
+  triggerReasons?: string[];
+  localConfidence?: number;
+  platform?: string;
+  foreground?: boolean;
+  location?: {
+    latitude: number;
+    longitude: number;
+    accuracyMeters?: number;
+    capturedAt?: string;
+  };
 };
 
 export type AnalyzeEvidenceResponse = {
+  analysisId: string;
+  analysisVersion: string;
+  status: 'QUEUED' | 'PROCESSING' | 'COMPLETED' | 'FAILED' | 'INCONCLUSIVE';
   riskLevel: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL' | 'UNKNOWN';
   confidence: number;
   summary: string;
   detectedSignals: string[];
   shouldEscalate: boolean;
+  recommendedAction: string;
+  evidenceWindow: Record<string, unknown>;
+  transcription: Record<string, unknown> | null;
+  acousticEvents: unknown[];
+  threatMatches: unknown[];
+  providerMetadata: Record<string, unknown>;
+  processingStartedAt: string;
+  processingFinishedAt: string;
+  latencyMs: number;
+  failureReason: string | null;
 };
 
 type RequestOptions = {
@@ -47,6 +80,13 @@ const VALID_RISK_LEVELS = new Set([
   'HIGH',
   'CRITICAL',
   'UNKNOWN',
+]);
+const VALID_ANALYSIS_STATUSES = new Set([
+  'QUEUED',
+  'PROCESSING',
+  'COMPLETED',
+  'FAILED',
+  'INCONCLUSIVE',
 ]);
 
 @Injectable()
@@ -167,19 +207,62 @@ export class AiServiceClient {
   private parseAnalyzeResponse(
     response: Record<string, unknown>,
   ): AnalyzeEvidenceResponse {
+    const analysisId = this.getString(response, 'analysisId');
+    const analysisVersion = this.getString(response, 'analysisVersion');
+    const status = this.getAnalysisStatus(response);
     const riskLevel = this.getRiskLevel(response);
     const confidence = this.getNumber(response, 'confidence');
     const summary = this.getString(response, 'summary');
     const detectedSignals = this.getStringArray(response, 'detectedSignals');
     const shouldEscalate = this.getBoolean(response, 'shouldEscalate');
+    const recommendedAction = this.getString(response, 'recommendedAction');
+    const evidenceWindow = this.getObject(response, 'evidenceWindow');
+    const transcription = this.getNullableObject(response, 'transcription');
+    const acousticEvents = this.getArray(response, 'acousticEvents');
+    const threatMatches = this.getArray(response, 'threatMatches');
+    const providerMetadata = this.getObject(response, 'providerMetadata');
+    const processingStartedAt = this.getString(response, 'processingStartedAt');
+    const processingFinishedAt = this.getString(
+      response,
+      'processingFinishedAt',
+    );
+    const latencyMs = this.getNumber(response, 'latencyMs');
+    const failureReason = this.getNullableString(response, 'failureReason');
 
     return {
+      analysisId,
+      analysisVersion,
+      status,
       riskLevel,
       confidence,
       summary,
       detectedSignals,
       shouldEscalate,
+      recommendedAction,
+      evidenceWindow,
+      transcription,
+      acousticEvents,
+      threatMatches,
+      providerMetadata,
+      processingStartedAt,
+      processingFinishedAt,
+      latencyMs,
+      failureReason,
     };
+  }
+
+  private getAnalysisStatus(
+    response: Record<string, unknown>,
+  ): AnalyzeEvidenceResponse['status'] {
+    const status = this.getString(response, 'status').toUpperCase();
+
+    if (!VALID_ANALYSIS_STATUSES.has(status)) {
+      throw new BadGatewayException(
+        'AI service returned an invalid analysis response.',
+      );
+    }
+
+    return status as AnalyzeEvidenceResponse['status'];
   }
 
   private getRiskLevel(
@@ -232,6 +315,71 @@ export class AiServiceClient {
     const value = response[key];
 
     if (typeof value !== 'boolean') {
+      throw new BadGatewayException(
+        'AI service returned an invalid analysis response.',
+      );
+    }
+
+    return value;
+  }
+
+  private getNullableString(
+    response: Record<string, unknown>,
+    key: string,
+  ): string | null {
+    const value = response[key];
+
+    if (value === null || value === undefined) {
+      return null;
+    }
+
+    if (typeof value !== 'string') {
+      throw new BadGatewayException(
+        'AI service returned an invalid analysis response.',
+      );
+    }
+
+    return value;
+  }
+
+  private getObject(
+    response: Record<string, unknown>,
+    key: string,
+  ): Record<string, unknown> {
+    const value = response[key];
+
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      throw new BadGatewayException(
+        'AI service returned an invalid analysis response.',
+      );
+    }
+
+    return value as Record<string, unknown>;
+  }
+
+  private getNullableObject(
+    response: Record<string, unknown>,
+    key: string,
+  ): Record<string, unknown> | null {
+    const value = response[key];
+
+    if (value === null || value === undefined) {
+      return null;
+    }
+
+    if (typeof value !== 'object' || Array.isArray(value)) {
+      throw new BadGatewayException(
+        'AI service returned an invalid analysis response.',
+      );
+    }
+
+    return value as Record<string, unknown>;
+  }
+
+  private getArray(response: Record<string, unknown>, key: string): unknown[] {
+    const value = response[key];
+
+    if (!Array.isArray(value)) {
       throw new BadGatewayException(
         'AI service returned an invalid analysis response.',
       );

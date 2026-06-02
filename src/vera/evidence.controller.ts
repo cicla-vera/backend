@@ -3,6 +3,8 @@ import {
   Controller,
   Delete,
   Get,
+  HttpCode,
+  HttpStatus,
   Param,
   Post,
   UploadedFile,
@@ -61,12 +63,26 @@ export class EvidenceController {
   }
 
   @Post(':id/analyze')
+  @HttpCode(HttpStatus.ACCEPTED)
   analyze(
     @CurrentUser() user: { sub: string },
     @Param('alertSessionId') alertSessionId: string,
     @Param('id') id: string,
   ) {
     return this.evidenceAnalysisService.analyze(user.sub, alertSessionId, id);
+  }
+
+  @Get(':id/analysis/latest')
+  findLatestAnalysis(
+    @CurrentUser() user: { sub: string },
+    @Param('alertSessionId') alertSessionId: string,
+    @Param('id') id: string,
+  ) {
+    return this.evidenceAnalysisService.findLatest(
+      user.sub,
+      alertSessionId,
+      id,
+    );
   }
 
   @Delete(':id')
