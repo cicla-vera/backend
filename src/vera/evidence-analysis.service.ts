@@ -30,6 +30,9 @@ type EvidenceAnalysisResponse = {
   analysisVersion: string | null;
   evidenceRecordId: string;
   alertSessionId: string;
+  attemptCount: number;
+  maxAttempts: number;
+  nextAttemptAt: Date | null;
   status: EvidenceAnalysisStatus;
   riskLevel: string | null;
   suggestedAlertLevel: AlertLevel | null;
@@ -74,6 +77,10 @@ const DEFAULT_CRITICAL_ACOUSTIC_CONFIDENCE_THRESHOLD = 0.72;
 const DEFAULT_CRITICAL_MIN_SIGNAL_REASONS = 2;
 const DEFAULT_CRITICAL_RECURRENCE_WINDOW_MS = 5 * 60 * 1000;
 const DEFAULT_CRITICAL_RECURRENCE_MIN_PREVIOUS = 1;
+const DEFAULT_ANALYSIS_MAX_ATTEMPTS = 3;
+const DEFAULT_ANALYSIS_RETRY_BASE_MS = 1000;
+const DEFAULT_ANALYSIS_RETRY_MAX_MS = 30 * 1000;
+const DEFAULT_ANALYSIS_LOCK_TIMEOUT_MS = 60 * 1000;
 
 @Injectable()
 export class EvidenceAnalysisService {
@@ -96,27 +103,50 @@ export class EvidenceAnalysisService {
     );
     this.assertAudioEvidence(evidenceRecord);
 
-    const analysis = await this.createQueuedAnalysis(userId, evidenceRecord);
-    await this.markProcessing(analysis.id);
+    const analysis = await this.enqueueAnalysis(userId, evidenceRecord);
+
+    return this.toResponse(analysis);
+  }
+
+  async processNextQueuedAnalysis(): Promise<boolean> {
+    const analysis = await this.claimNextQueuedAnalysis();
+
+    if (!analysis) {
+      return false;
+    }
+
+    let evidenceRecord: EvidenceRecord;
 
     try {
-      const input = await this.buildAnalyzeEvidenceInput(evidenceRecord);
-      const aiResult = await this.aiServiceClient.analyzeEvidence(input);
-
-      return this.persistAiResult(
-        userId,
-        evidenceRecord,
-        analysis.id,
-        aiResult,
-      );
+      evidenceRecord = await this.findWorkerEvidence(analysis);
     } catch (error) {
-      return this.persistFailedAnalysis(
-        userId,
-        evidenceRecord,
+      await this.persistFailedAnalysis(
+        analysis.userId,
+        {
+          id: analysis.evidenceRecordId,
+          alertSessionId: analysis.alertSessionId,
+        },
         analysis.id,
         this.getSafeFailureReason(error),
       );
+
+      return true;
     }
+
+    if (analysis.attemptCount > analysis.maxAttempts) {
+      await this.persistFailedAnalysis(
+        analysis.userId,
+        evidenceRecord,
+        analysis.id,
+        'analysis_attempts_exhausted',
+      );
+
+      return true;
+    }
+
+    await this.processClaimedAnalysis(analysis, evidenceRecord);
+
+    return true;
   }
 
   async findLatest(
@@ -164,24 +194,205 @@ export class EvidenceAnalysisService {
     return evidenceRecord;
   }
 
-  private async createQueuedAnalysis(
+  private async findWorkerEvidence(
+    analysis: EvidenceAnalysis,
+  ): Promise<EvidenceRecord> {
+    const evidenceRecord = await this.prisma.evidenceRecord.findFirst({
+      where: {
+        id: analysis.evidenceRecordId,
+        userId: analysis.userId,
+        alertSessionId: analysis.alertSessionId,
+        deletedAt: null,
+      },
+    });
+
+    if (!evidenceRecord) {
+      throw new EvidenceAnalysisError('evidence_record_unavailable');
+    }
+
+    return evidenceRecord;
+  }
+
+  private async enqueueAnalysis(
     userId: string,
     evidenceRecord: EvidenceRecord,
   ): Promise<EvidenceAnalysis> {
-    return this.prisma.evidenceAnalysis.create({
-      data: {
+    const analysis = await this.prisma.evidenceAnalysis.upsert({
+      where: { requestKey: evidenceRecord.id },
+      create: {
         userId,
         alertSessionId: evidenceRecord.alertSessionId,
         evidenceRecordId: evidenceRecord.id,
+        requestKey: evidenceRecord.id,
         status: EvidenceAnalysisStatus.QUEUED,
+        maxAttempts: this.getAnalysisQueueConfig().maxAttempts,
+        nextAttemptAt: new Date(),
+      },
+      update: {},
+    });
+
+    if (analysis.status !== EvidenceAnalysisStatus.FAILED) {
+      return analysis;
+    }
+
+    await this.prisma.evidenceAnalysis.updateMany({
+      where: {
+        id: analysis.id,
+        status: EvidenceAnalysisStatus.FAILED,
+      },
+      data: {
+        analysisId: null,
+        analysisVersion: null,
+        status: EvidenceAnalysisStatus.QUEUED,
+        attemptCount: 0,
+        nextAttemptAt: new Date(),
+        lockedAt: null,
+        lastAttemptAt: null,
+        riskLevel: null,
+        suggestedAlertLevel: null,
+        confidence: null,
+        summary: null,
+        detectedSignals: Prisma.DbNull,
+        shouldEscalate: null,
+        recommendedAction: null,
+        evidenceWindow: Prisma.DbNull,
+        transcription: Prisma.DbNull,
+        acousticEvents: Prisma.DbNull,
+        threatMatches: Prisma.DbNull,
+        providerMetadata: Prisma.DbNull,
+        processingStartedAt: null,
+        processingFinishedAt: null,
+        latencyMs: null,
+        failureReason: null,
       },
     });
+
+    return (
+      (await this.prisma.evidenceAnalysis.findUnique({
+        where: { id: analysis.id },
+      })) ?? analysis
+    );
   }
 
-  private async markProcessing(evidenceAnalysisId: string): Promise<void> {
+  private async claimNextQueuedAnalysis(): Promise<EvidenceAnalysis | null> {
+    const config = this.getAnalysisQueueConfig();
+    const now = new Date();
+    const staleBefore = new Date(now.getTime() - config.lockTimeoutMs);
+    const eligibility = this.buildQueueEligibility(now, staleBefore);
+
+    for (let index = 0; index < 3; index += 1) {
+      const candidate = await this.prisma.evidenceAnalysis.findFirst({
+        where: eligibility,
+        orderBy: [{ nextAttemptAt: 'asc' }, { createdAt: 'asc' }],
+      });
+
+      if (!candidate) {
+        return null;
+      }
+
+      const claimed = await this.prisma.evidenceAnalysis.updateMany({
+        where: {
+          id: candidate.id,
+          ...eligibility,
+        },
+        data: {
+          status: EvidenceAnalysisStatus.PROCESSING,
+          attemptCount: { increment: 1 },
+          lockedAt: now,
+          lastAttemptAt: now,
+          nextAttemptAt: null,
+        },
+      });
+
+      if (claimed.count === 0) {
+        continue;
+      }
+
+      return this.prisma.evidenceAnalysis.findUnique({
+        where: { id: candidate.id },
+      });
+    }
+
+    return null;
+  }
+
+  private buildQueueEligibility(
+    now: Date,
+    staleBefore: Date,
+  ): Prisma.EvidenceAnalysisWhereInput {
+    return {
+      OR: [
+        {
+          status: EvidenceAnalysisStatus.QUEUED,
+          nextAttemptAt: { lte: now },
+        },
+        {
+          status: EvidenceAnalysisStatus.PROCESSING,
+          lockedAt: { lte: staleBefore },
+        },
+      ],
+    };
+  }
+
+  private async processClaimedAnalysis(
+    analysis: EvidenceAnalysis,
+    evidenceRecord: EvidenceRecord,
+  ): Promise<void> {
+    try {
+      const input = await this.buildAnalyzeEvidenceInput(evidenceRecord);
+      const aiResult = await this.aiServiceClient.analyzeEvidence(input);
+
+      if (['PROCESSING', 'QUEUED'].includes(aiResult.status)) {
+        throw new EvidenceAnalysisError(
+          'ai_service_non_terminal_response',
+          true,
+        );
+      }
+
+      await this.persistAiResult(
+        analysis.userId,
+        evidenceRecord,
+        analysis.id,
+        aiResult,
+      );
+    } catch (error) {
+      const failureReason = this.getSafeFailureReason(error);
+
+      if (
+        this.isRetryableAnalysisError(error) &&
+        analysis.attemptCount < analysis.maxAttempts
+      ) {
+        await this.rescheduleAnalysis(analysis, failureReason);
+        return;
+      }
+
+      await this.persistFailedAnalysis(
+        analysis.userId,
+        evidenceRecord,
+        analysis.id,
+        failureReason,
+      );
+    }
+  }
+
+  private async rescheduleAnalysis(
+    analysis: EvidenceAnalysis,
+    failureReason: string,
+  ): Promise<void> {
+    const config = this.getAnalysisQueueConfig();
+    const delayMs = Math.min(
+      config.retryMaxMs,
+      config.retryBaseMs * 2 ** Math.max(0, analysis.attemptCount - 1),
+    );
+
     await this.prisma.evidenceAnalysis.update({
-      where: { id: evidenceAnalysisId },
-      data: { status: EvidenceAnalysisStatus.PROCESSING },
+      where: { id: analysis.id },
+      data: {
+        status: EvidenceAnalysisStatus.QUEUED,
+        failureReason,
+        lockedAt: null,
+        nextAttemptAt: new Date(Date.now() + delayMs),
+      },
     });
   }
 
@@ -282,7 +493,7 @@ export class EvidenceAnalysisService {
 
   private async persistFailedAnalysis(
     userId: string,
-    evidenceRecord: EvidenceRecord,
+    evidenceRecord: Pick<EvidenceRecord, 'alertSessionId' | 'id'>,
     evidenceAnalysisId: string,
     failureReason: string,
   ): Promise<EvidenceAnalysisResponse> {
@@ -292,6 +503,9 @@ export class EvidenceAnalysisService {
         data: {
           status: EvidenceAnalysisStatus.FAILED,
           failureReason,
+          lockedAt: null,
+          nextAttemptAt: null,
+          processingFinishedAt: new Date(),
         },
       });
 
@@ -724,6 +938,8 @@ export class EvidenceAnalysisService {
         status === EvidenceAnalysisStatus.FAILED
           ? (aiResult.failureReason ?? 'ai_service_failed')
           : aiResult.failureReason,
+      lockedAt: null,
+      nextAttemptAt: null,
     };
   }
 
@@ -759,6 +975,20 @@ export class EvidenceAnalysisService {
     return 'ai_service_failed';
   }
 
+  private isRetryableAnalysisError(error: unknown): boolean {
+    if (error instanceof EvidenceAnalysisError) {
+      return error.retryable;
+    }
+
+    if (error instanceof HttpException) {
+      const status = error.getStatus();
+
+      return status === 408 || status === 429 || status >= 500;
+    }
+
+    return true;
+  }
+
   private toResponse(analysis: EvidenceAnalysis): EvidenceAnalysisResponse {
     return {
       id: analysis.id,
@@ -766,6 +996,9 @@ export class EvidenceAnalysisService {
       analysisVersion: analysis.analysisVersion,
       evidenceRecordId: analysis.evidenceRecordId,
       alertSessionId: analysis.alertSessionId,
+      attemptCount: analysis.attemptCount,
+      maxAttempts: analysis.maxAttempts,
+      nextAttemptAt: analysis.nextAttemptAt,
       status: analysis.status,
       riskLevel: analysis.riskLevel,
       suggestedAlertLevel: analysis.suggestedAlertLevel,
@@ -1003,6 +1236,40 @@ export class EvidenceAnalysisService {
     };
   }
 
+  private getAnalysisQueueConfig(): {
+    lockTimeoutMs: number;
+    maxAttempts: number;
+    retryBaseMs: number;
+    retryMaxMs: number;
+  } {
+    return {
+      lockTimeoutMs: this.getEnvInteger(
+        'VERA_AI_ANALYSIS_LOCK_TIMEOUT_MS',
+        DEFAULT_ANALYSIS_LOCK_TIMEOUT_MS,
+        1000,
+        60 * 60 * 1000,
+      ),
+      maxAttempts: this.getEnvInteger(
+        'VERA_AI_ANALYSIS_MAX_ATTEMPTS',
+        DEFAULT_ANALYSIS_MAX_ATTEMPTS,
+        1,
+        20,
+      ),
+      retryBaseMs: this.getEnvInteger(
+        'VERA_AI_ANALYSIS_RETRY_BASE_MS',
+        DEFAULT_ANALYSIS_RETRY_BASE_MS,
+        100,
+        60 * 1000,
+      ),
+      retryMaxMs: this.getEnvInteger(
+        'VERA_AI_ANALYSIS_RETRY_MAX_MS',
+        DEFAULT_ANALYSIS_RETRY_MAX_MS,
+        100,
+        60 * 60 * 1000,
+      ),
+    };
+  }
+
   private getEnvNumber(
     name: string,
     fallback: number,
@@ -1075,7 +1342,10 @@ export class EvidenceAnalysisService {
 }
 
 class EvidenceAnalysisError extends Error {
-  constructor(readonly code: string) {
+  constructor(
+    readonly code: string,
+    readonly retryable = false,
+  ) {
     super(code);
   }
 }
