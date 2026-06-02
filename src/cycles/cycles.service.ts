@@ -138,14 +138,14 @@ export class CyclesService {
     const averageDuration =
       durations.length > 0
         ? Math.round(durations.reduce((a, b) => a + b, 0) / durations.length)
-        : profile?.avgPeriodDuration ?? null;
+        : (profile?.avgPeriodDuration ?? null);
 
     const averageCycleLength =
       cycleLengths.length > 0
         ? Math.round(
             cycleLengths.reduce((a, b) => a + b, 0) / cycleLengths.length,
           )
-        : profile?.avgCycleLength ?? null;
+        : (profile?.avgCycleLength ?? null);
 
     const regularityVariation =
       cycleLengths.length > 0

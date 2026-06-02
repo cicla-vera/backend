@@ -1,12 +1,6 @@
 import { PrismaService } from '../prisma/prisma.service';
 import { CyclesPredictionService } from './cycles.prediction.service';
 
-type CycleForPrediction = {
-  startDate: Date;
-  endDate: Date;
-  duration: number;
-};
-
 type ProfileDelegateMock = {
   findUnique: jest.Mock;
 };
@@ -15,11 +9,7 @@ type CycleLogDelegateMock = {
   findMany: jest.Mock;
 };
 
-const cycle = (
-  startDate: string,
-  endDate?: string,
-  duration = 5,
-): any => ({
+const cycle = (startDate: string, endDate?: string, duration = 5): any => ({
   startDate: new Date(`${startDate}T00:00:00.000Z`),
   endDate: endDate ? new Date(`${endDate}T00:00:00.000Z`) : null,
   duration: endDate ? duration : null,

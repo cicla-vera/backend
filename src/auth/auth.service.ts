@@ -1,4 +1,8 @@
-import { Injectable, ConflictException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+} from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from '../prisma/prisma.service';
 import { RegisterDto } from './dto/register.dto';
@@ -38,13 +42,7 @@ export class AuthService {
             avgPeriodDuration: dto.initialCycleData?.avgPeriodDuration,
           },
         },
-        ...(dto.initialCycleData?.lastPeriodDate && {
-          cycleLogs: {
-            create: {
-              startDate: new Date(dto.initialCycleData.lastPeriodDate),
-            },
-          },
-        }),
+        ...this.buildInitialCycleCreateData(dto),
       },
       include: {
         profile: true,
@@ -87,6 +85,40 @@ export class AuthService {
         id: user.id,
         email: user.email,
         name: user.profile?.name,
+      },
+    };
+  }
+
+  private buildInitialCycleCreateData(dto: RegisterDto) {
+    const initialCycleData = dto.initialCycleData;
+
+    if (!initialCycleData?.lastPeriodDate) {
+      return {};
+    }
+
+    const startDate = new Date(initialCycleData.lastPeriodDate);
+    const endDate = initialCycleData.lastPeriodEndDate
+      ? new Date(initialCycleData.lastPeriodEndDate)
+      : null;
+
+    if (endDate && endDate < startDate) {
+      throw new BadRequestException(
+        'Last period end date cannot be before start date',
+      );
+    }
+
+    return {
+      cycleLogs: {
+        create: {
+          startDate,
+          endDate,
+          duration: endDate
+            ? Math.round(
+                (endDate.getTime() - startDate.getTime()) /
+                  (1000 * 60 * 60 * 24),
+              )
+            : null,
+        },
       },
     };
   }

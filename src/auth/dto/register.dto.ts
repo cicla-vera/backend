@@ -7,6 +7,7 @@ import {
   ValidateNested,
   IsInt,
   Min,
+  Max,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 
@@ -16,13 +17,19 @@ class InitialCycleDataDto {
   lastPeriodDate?: string;
 
   @IsOptional()
+  @IsDateString()
+  lastPeriodEndDate?: string;
+
+  @IsOptional()
   @IsInt()
-  @Min(20)
+  @Min(15)
+  @Max(50)
   avgCycleLength?: number;
 
   @IsOptional()
   @IsInt()
   @Min(1)
+  @Max(15)
   avgPeriodDuration?: number;
 }
 
