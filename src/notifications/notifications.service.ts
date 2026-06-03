@@ -3,6 +3,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import type { NotificationDevice } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { RegisterNotificationDeviceDto } from './dto/register-notification-device.dto';
 import { SendDueRemindersDto } from './dto/send-due-reminders.dto';
@@ -31,6 +32,28 @@ type ExpoPushMessage = {
   title: string;
   body: string;
   data?: Record<string, string>;
+};
+
+type ExpoPushTicket = {
+  id?: string;
+  status?: 'ok' | 'error';
+  message?: string;
+  details?: {
+    error?: string;
+  };
+};
+
+type ExpoPushResponse = {
+  data?: ExpoPushTicket[] | ExpoPushTicket;
+  errors?: unknown[];
+};
+
+type PushSendResult = {
+  disabledDeviceCount: number;
+  failed: number;
+  failureReason?: string;
+  response: unknown;
+  sent: number;
 };
 
 @Injectable()
@@ -124,7 +147,7 @@ export class NotificationsService {
   async sendTest(userId: string, dto: SendTestNotificationDto) {
     return this.sendPushToUser(userId, {
       title: dto.title ?? 'Cicla Vera',
-      body: dto.body ?? 'Push notifications are working.',
+      body: dto.body ?? 'Notificacoes do Cicla Vera estao funcionando.',
       data: { type: 'TEST_NOTIFICATION' },
     });
   }
@@ -147,7 +170,7 @@ export class NotificationsService {
       return {
         sent: 0,
         skipped: reminders.length,
-        reason: 'Reminder hour has not been reached yet.',
+        reason: 'O horario do lembrete ainda nao chegou.',
         reminders,
       };
     }
@@ -174,7 +197,7 @@ export class NotificationsService {
         results.push({
           type: reminder.type,
           status: 'skipped',
-          reason: 'Already sent for this date.',
+          reason: 'Lembrete ja enviado nesta data.',
         });
         continue;
       }
@@ -185,7 +208,9 @@ export class NotificationsService {
         results.push({
           type: reminder.type,
           status: 'skipped',
-          reason: 'No enabled devices registered.',
+          reason:
+            sendResult.failureReason ??
+            'Nenhum dispositivo habilitado recebeu a notificacao.',
         });
         continue;
       }
@@ -222,8 +247,8 @@ export class NotificationsService {
     ) {
       reminders.push({
         type: 'PERIOD_REMINDER',
-        title: 'Period reminder',
-        body: 'Your next period is expected today.',
+        title: 'Lembrete do ciclo',
+        body: 'Sua próxima menstruação está prevista para hoje.',
         data: { type: 'PERIOD_REMINDER' },
       });
     }
@@ -235,8 +260,8 @@ export class NotificationsService {
     ) {
       reminders.push({
         type: 'OVULATION_REMINDER',
-        title: 'Ovulation reminder',
-        body: 'Your ovulation is expected today.',
+        title: 'Janela fértil',
+        body: 'Sua ovulação está prevista para hoje.',
         data: { type: 'OVULATION_REMINDER' },
       });
     }
@@ -244,8 +269,8 @@ export class NotificationsService {
     if (settings.medicationReminder) {
       reminders.push({
         type: 'MEDICATION_REMINDER',
-        title: 'Medication reminder',
-        body: 'Remember to take your medication.',
+        title: 'Lembrete de medicamento',
+        body: 'Hora de conferir seus medicamentos de hoje.',
         data: { type: 'MEDICATION_REMINDER' },
       });
     }
@@ -253,8 +278,8 @@ export class NotificationsService {
     if (settings.waterReminder) {
       reminders.push({
         type: 'WATER_REMINDER',
-        title: 'Water reminder',
-        body: 'Remember to drink water today.',
+        title: 'Hidratação',
+        body: 'Beba água e cuide do seu corpo hoje.',
         data: { type: 'WATER_REMINDER' },
       });
     }
@@ -316,13 +341,19 @@ export class NotificationsService {
       body: string;
       data?: Record<string, string>;
     },
-  ) {
+  ): Promise<PushSendResult> {
     const devices = await this.prisma.notificationDevice.findMany({
       where: { userId, enabled: true },
     });
 
     if (devices.length === 0) {
-      return { sent: 0, response: null };
+      return {
+        disabledDeviceCount: 0,
+        failed: 0,
+        failureReason: 'Nenhum dispositivo habilitado cadastrado.',
+        response: null,
+        sent: 0,
+      };
     }
 
     const messages: ExpoPushMessage[] = devices.map((device) => ({
@@ -343,7 +374,7 @@ export class NotificationsService {
       body: JSON.stringify(messages),
     });
 
-    const responseBody = (await response.json()) as unknown;
+    const responseBody = (await response.json().catch(() => null)) as unknown;
 
     if (!response.ok) {
       throw new BadRequestException({
@@ -352,10 +383,97 @@ export class NotificationsService {
       });
     }
 
+    const tickets = this.getExpoPushTickets(responseBody, devices.length);
+    const disabledDeviceIds = this.getDeviceIdsToDisable(devices, tickets);
+
+    if (disabledDeviceIds.length > 0) {
+      await this.prisma.notificationDevice.updateMany({
+        where: {
+          id: { in: disabledDeviceIds },
+          userId,
+        },
+        data: {
+          enabled: false,
+        },
+      });
+    }
+
+    const sent = tickets.filter((ticket) => ticket.status === 'ok').length;
+    const failed = tickets.length - sent;
+    const failureReason =
+      sent === 0 && failed > 0
+        ? 'A Expo Push API recusou todos os dispositivos habilitados.'
+        : undefined;
+
     return {
-      sent: devices.length,
+      disabledDeviceCount: disabledDeviceIds.length,
+      failed,
+      failureReason,
       response: responseBody,
+      sent,
     };
+  }
+
+  private getExpoPushTickets(
+    responseBody: unknown,
+    expectedCount: number,
+  ): ExpoPushTicket[] {
+    const body = this.asExpoPushResponse(responseBody);
+    const data = Array.isArray(body?.data)
+      ? body.data
+      : body?.data
+        ? [body.data]
+        : [];
+
+    if (data.length === 0 && body?.errors?.length) {
+      throw new BadRequestException({
+        message: 'Expo push returned request errors.',
+        response: responseBody,
+      });
+    }
+
+    if (data.length !== expectedCount) {
+      throw new BadRequestException({
+        message: 'Expo push returned an unexpected ticket count.',
+        response: responseBody,
+      });
+    }
+
+    return data.map((ticket) => ({
+      details:
+        ticket.details && typeof ticket.details === 'object'
+          ? { error: this.getString(ticket.details.error) }
+          : undefined,
+      id: this.getString(ticket.id),
+      message: this.getString(ticket.message),
+      status: ticket.status === 'ok' ? 'ok' : 'error',
+    }));
+  }
+
+  private getDeviceIdsToDisable(
+    devices: NotificationDevice[],
+    tickets: ExpoPushTicket[],
+  ): string[] {
+    return tickets
+      .map((ticket, index) =>
+        ticket.status === 'error' &&
+        ticket.details?.error === 'DeviceNotRegistered'
+          ? devices[index]?.id
+          : null,
+      )
+      .filter((id): id is string => typeof id === 'string');
+  }
+
+  private asExpoPushResponse(value: unknown): ExpoPushResponse | null {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return null;
+    }
+
+    return value;
+  }
+
+  private getString(value: unknown): string | undefined {
+    return typeof value === 'string' ? value : undefined;
   }
 
   private isExpoPushToken(token: string) {
