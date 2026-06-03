@@ -97,6 +97,14 @@ O backend usa `SUPABASE_SERVICE_ROLE_KEY` apenas no servidor para upload/downloa
 
 Evidências removidas pelo app são ocultadas da visão da usuária, mas o arquivo no Storage não é apagado imediatamente. O backend marca `hiddenFromUserAt` e agenda a retenção com `retentionUntil`; a exclusão definitiva via `deletedAt` fica preparada para um job administrativo futuro.
 
+## Pacote tecnico de evidencia Vera
+
+O backend prepara a exportacao futura por meio do servico interno `EvidenceExportService`, sem endpoint publico no MVP. O manifesto gerado inclui sessao Vera, hashes SHA-256 dos arquivos, metadados, eventos de timeline, amostras de localizacao, resultados de IA e eventos de auditoria encadeados por hash.
+
+O manifesto calcula um `manifestHash` SHA-256 sobre os campos tecnicos antes de anexar o recibo de timestamp. Hoje o adapter de timestamp retorna explicitamente `UNTRUSTED_SYSTEM_CLOCK`, usando o relogio do servidor, ou `PROVIDER_ADAPTER_PENDING` quando `VERA_EVIDENCE_TIMESTAMP_PROVIDER` e configurado. Antes de afirmar timestamp confiavel, ainda e necessario implementar e validar um provedor RFC 3161 ou equivalente.
+
+Essa camada fornece integridade tecnica e rastreabilidade, mas nao garante sozinha validade juridica. A admissibilidade depende de consentimento, cadeia operacional de custodia, politicas de acesso, revisao pericial e aceitacao pela autoridade competente.
+
 ## SMS de emergência
 
 O envio de SMS usa `EMERGENCY_SMS_PROVIDER=mock` por padrão em desenvolvimento/testes, sem chamada externa. Para envio real, configure `EMERGENCY_SMS_PROVIDER=twilio`, `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN` e `TWILIO_FROM_PHONE_NUMBER`; tokens nunca devem aparecer em logs, respostas ou commits.
