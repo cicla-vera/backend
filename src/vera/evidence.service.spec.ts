@@ -730,4 +730,76 @@ describe('EvidenceService', () => {
 
     expect(evidenceStorage.uploadEvidence).not.toHaveBeenCalled();
   });
+
+  it('accepts extended Vera audio chunk metadata', async () => {
+    prisma.alertSession.findFirst.mockResolvedValue(baseSession());
+
+    await service.upload(
+      'user-id',
+      'session-id',
+      {
+        type: EvidenceType.AUDIO,
+        metadata: JSON.stringify({
+          accuracyMeters: 8,
+          audioChunkDurationMs: 8000,
+          audioChunkHash: 'a'.repeat(64),
+          audioChunkIndex: 3,
+          audioChunkSequenceId: 'vera-audio-20260603T120000Z',
+          audioLoudSampleRatio: 0.44,
+          audioMaxMeteringDb: -18.3,
+          audioMeanMeteringDb: -31.4,
+          audioPreviousChunkHash: 'b'.repeat(64),
+          audioSentinelConfidence: 0.82,
+          audioSentinelSampleCount: 16,
+          captureEndedAt: '2026-06-03T12:00:24.000Z',
+          captureStartedAt: '2026-06-03T12:00:16.000Z',
+          capturedAt: '2026-06-03T12:00:21.000Z',
+          foreground: false,
+          latitude: -3.7319,
+          locationSource: 'background',
+          longitude: -38.5267,
+          platform: 'android',
+          postRollMs: 0,
+          preRollMs: 8000,
+          source: 'audio_sentinel',
+          triggeredAt: '2026-06-03T12:00:24.000Z',
+          triggerReasons: 'sustained_loud_audio,volume_spike',
+        }),
+      },
+      audioFile(),
+    );
+
+    const createArgs = tx.evidenceRecord.create.mock.calls[0]?.[0];
+
+    expect(createArgs?.data.metadata).toMatchObject({
+      audioChunkHash: 'a'.repeat(64),
+      audioPreviousChunkHash: 'b'.repeat(64),
+      audioChunkSequenceId: 'vera-audio-20260603T120000Z',
+    });
+  });
+
+  it('rejects metadata above the extended key limit', async () => {
+    prisma.alertSession.findFirst.mockResolvedValue(baseSession());
+
+    await expect(
+      service.upload(
+        'user-id',
+        'session-id',
+        {
+          type: EvidenceType.AUDIO,
+          metadata: JSON.stringify(
+            Object.fromEntries(
+              Array.from({ length: 33 }, (_, index) => [
+                `key${index}`,
+                index,
+              ]),
+            ),
+          ),
+        },
+        audioFile(),
+      ),
+    ).rejects.toBeInstanceOf(BadRequestException);
+
+    expect(evidenceStorage.uploadEvidence).not.toHaveBeenCalled();
+  });
 });

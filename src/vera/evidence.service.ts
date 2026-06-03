@@ -67,7 +67,7 @@ type CreateAuditEventInput = {
   metadata?: EvidenceAuditMetadataPayload;
 };
 
-const MAX_METADATA_KEYS = 20;
+const MAX_METADATA_KEYS = 32;
 const MAX_METADATA_KEY_LENGTH = 40;
 const MAX_METADATA_STRING_LENGTH = 240;
 const MAX_ORIGINAL_NAME_LENGTH = 240;
