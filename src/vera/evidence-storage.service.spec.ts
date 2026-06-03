@@ -114,6 +114,22 @@ describe('EvidenceStorageService', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it('treats placeholder storage values as unconfigured', async () => {
+    process.env.SUPABASE_URL = 'https://xxxx.supabase.co/';
+
+    await expect(
+      service.uploadEvidence({
+        userId: 'user-id',
+        alertSessionId: 'session-id',
+        fileName: 'audio.wav',
+        contentType: 'audio/wav',
+        body: Buffer.from('audio-bytes'),
+      }),
+    ).rejects.toBeInstanceOf(InternalServerErrorException);
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it('wraps failed Supabase responses', async () => {
     fetchMock.mockResolvedValue(
       new Response('bucket not found', { status: 404 }),
@@ -128,5 +144,22 @@ describe('EvidenceStorageService', () => {
         body: Buffer.from('audio-bytes'),
       }),
     ).rejects.toBeInstanceOf(InternalServerErrorException);
+  });
+
+  it('wraps unreachable storage endpoints without leaking raw fetch errors', async () => {
+    fetchMock.mockRejectedValue(new TypeError('fetch failed'));
+
+    await expect(
+      service.uploadEvidence({
+        userId: 'user-id',
+        alertSessionId: 'session-id',
+        fileName: 'audio.wav',
+        contentType: 'audio/wav',
+        body: Buffer.from('audio-bytes'),
+      }),
+    ).rejects.toMatchObject({
+      message:
+        'Could not upload evidence. Evidence storage endpoint is unreachable.',
+    });
   });
 });
