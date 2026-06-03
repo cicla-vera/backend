@@ -103,6 +103,10 @@ O envio de SMS usa `EMERGENCY_SMS_PROVIDER=mock` por padrão em desenvolvimento/
 
 Quando uma sessão Vera entra em `CRITICAL`, o backend dispara automaticamente os contatos ativos com uma mensagem segura em português, orientação para acionar polícia/emergência local e localização aproximada quando disponível. O dispatch é idempotente por contato: contatos já notificados não recebem duplicatas em novas tentativas, e nenhum áudio, transcrição, foto, vídeo ou arquivo bruto é enviado para terceiros.
 
+## Push notifications
+
+O backend envia push pelo Expo Push Service, sem segredo de servidor adicional. Para testar em desenvolvimento, use um dev build do mobile que gere um `ExpoPushToken`, registre o token em `POST /notifications/devices` e dispare `POST /notifications/test`. A Expo pode retornar tickets com erro `DeviceNotRegistered`; nesse caso o backend desativa o device para evitar novas tentativas com token inválido. Lembretes reais podem ser conferidos em `GET /notifications/reminders/preview` e disparados manualmente em `POST /notifications/reminders/send-due`.
+
 ## Serviço de IA
 
 O backend conversa com o microsserviço Python/FastAPI por `AI_SERVICE_URL`. O cliente HTTP usa timeout configurável em `AI_SERVICE_TIMEOUT_MS` e traduz falhas externas em exceptions controladas, para que upload, alerta e mobile não dependam de erro bruto do serviço de IA.
