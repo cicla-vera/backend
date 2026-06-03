@@ -41,15 +41,19 @@ export class EvidenceStorageService {
   ): Promise<UploadEvidenceResult> {
     const config = this.getConfig();
     const path = this.buildEvidencePath(input);
-    const response = await fetch(this.getObjectUrl(config, path), {
-      method: 'POST',
-      headers: {
-        ...this.getAuthHeaders(config),
-        'Content-Type': input.contentType,
-        'x-upsert': 'false',
+    const response = await this.fetchStorage(
+      this.getObjectUrl(config, path),
+      {
+        method: 'POST',
+        headers: {
+          ...this.getAuthHeaders(config),
+          'Content-Type': input.contentType,
+          'x-upsert': 'false',
+        },
+        body: this.toFetchBody(input.body),
       },
-      body: this.toFetchBody(input.body),
-    });
+      'upload evidence',
+    );
 
     await this.assertStorageResponse(response, 'upload evidence');
 
@@ -64,10 +68,14 @@ export class EvidenceStorageService {
 
   async downloadEvidence(path: string): Promise<DownloadEvidenceResult> {
     const config = this.getConfig();
-    const response = await fetch(this.getObjectUrl(config, path), {
-      method: 'GET',
-      headers: this.getAuthHeaders(config),
-    });
+    const response = await this.fetchStorage(
+      this.getObjectUrl(config, path),
+      {
+        method: 'GET',
+        headers: this.getAuthHeaders(config),
+      },
+      'download evidence',
+    );
 
     await this.assertStorageResponse(response, 'download evidence');
 
@@ -101,11 +109,17 @@ export class EvidenceStorageService {
   }
 
   private getConfig(): EvidenceStorageConfig {
-    const supabaseUrl = process.env.SUPABASE_URL?.replace(/\/+$/, '');
-    const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-    const bucket = process.env.SUPABASE_STORAGE_BUCKET ?? 'vera-evidence';
+    const supabaseUrl = process.env.SUPABASE_URL?.trim().replace(/\/+$/, '');
+    const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY?.trim();
+    const bucket =
+      process.env.SUPABASE_STORAGE_BUCKET?.trim() || 'vera-evidence';
 
-    if (!supabaseUrl || !serviceRoleKey) {
+    if (
+      !supabaseUrl ||
+      !serviceRoleKey ||
+      this.isPlaceholderValue(supabaseUrl) ||
+      this.isPlaceholderValue(serviceRoleKey)
+    ) {
       throw new InternalServerErrorException(
         'Evidence storage is not configured.',
       );
@@ -116,6 +130,20 @@ export class EvidenceStorageService {
 
   private getObjectUrl(config: EvidenceStorageConfig, path: string): string {
     return `${config.supabaseUrl}/storage/v1/object/${config.bucket}/${path}`;
+  }
+
+  private async fetchStorage(
+    url: string,
+    init: RequestInit,
+    action: string,
+  ): Promise<Response> {
+    try {
+      return await fetch(url, init);
+    } catch {
+      throw new InternalServerErrorException(
+        `Could not ${action}. Evidence storage endpoint is unreachable.`,
+      );
+    }
   }
 
   private getAuthHeaders(
@@ -155,6 +183,19 @@ export class EvidenceStorageService {
 
   private sanitizePathSegment(segment: string): string {
     return segment.replace(/[^a-zA-Z0-9_-]+/g, '-');
+  }
+
+  private isPlaceholderValue(value: string): boolean {
+    const normalized = value.trim().toLowerCase();
+
+    return (
+      normalized.includes('[project-ref]') ||
+      normalized.includes('<') ||
+      normalized.includes('>') ||
+      normalized.includes('xxxx.supabase.co') ||
+      normalized.startsWith('your_') ||
+      normalized.startsWith('your-')
+    );
   }
 
   private getBodySize(body: EvidenceBody): number {
