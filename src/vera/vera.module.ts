@@ -12,8 +12,10 @@ import { EmergencyDispatchService } from './emergency-dispatch.service';
 import { EvidenceController } from './evidence.controller';
 import { EvidenceAnalysisService } from './evidence-analysis.service';
 import { EvidenceAnalysisWorkerService } from './evidence-analysis-worker.service';
+import { EvidenceExportService } from './evidence-export.service';
 import { EvidenceService } from './evidence.service';
 import { EvidenceStorageService } from './evidence-storage.service';
+import { EvidenceTimestampService } from './evidence-timestamp.service';
 import { MessagingProviderService } from './messaging-provider.service';
 import { SafetyLocationsController } from './safety-locations.controller';
 import { SafetyLocationsService } from './safety-locations.service';
@@ -45,8 +47,10 @@ import { VeraService } from './vera.service';
     MessagingProviderService,
     EvidenceAnalysisService,
     EvidenceAnalysisWorkerService,
+    EvidenceExportService,
     EvidenceService,
     EvidenceStorageService,
+    EvidenceTimestampService,
   ],
   exports: [
     VeraService,
@@ -59,8 +63,10 @@ import { VeraService } from './vera.service';
     EmergencyDispatchService,
     MessagingProviderService,
     EvidenceAnalysisService,
+    EvidenceExportService,
     EvidenceService,
     EvidenceStorageService,
+    EvidenceTimestampService,
   ],
 })
 export class VeraModule {}

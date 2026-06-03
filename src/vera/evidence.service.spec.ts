@@ -789,10 +789,7 @@ describe('EvidenceService', () => {
           type: EvidenceType.AUDIO,
           metadata: JSON.stringify(
             Object.fromEntries(
-              Array.from({ length: 33 }, (_, index) => [
-                `key${index}`,
-                index,
-              ]),
+              Array.from({ length: 33 }, (_, index) => [`key${index}`, index]),
             ),
           ),
         },
