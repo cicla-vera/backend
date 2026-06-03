@@ -12,8 +12,7 @@ function parseCommaSeparatedList(value?: string) {
 }
 
 function getCorsOrigin() {
-  const configuredOrigins =
-    process.env.CORS_ORIGINS ?? process.env.CORS_ORIGIN;
+  const configuredOrigins = process.env.CORS_ORIGINS ?? process.env.CORS_ORIGIN;
 
   if (!configuredOrigins) {
     return process.env.NODE_ENV === 'production' ? false : true;

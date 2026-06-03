@@ -101,10 +101,16 @@ export class CyclesService {
   }
 
   async getHistory(userId: string) {
-    const cycles = await this.prisma.cycleLog.findMany({
-      where: { userId },
-      orderBy: { startDate: 'asc' },
-    });
+    const [cycles, profile] = await Promise.all([
+      this.prisma.cycleLog.findMany({
+        where: { userId },
+        orderBy: { startDate: 'asc' },
+      }),
+      this.prisma.profile.findUnique({
+        where: { userId },
+        select: { avgCycleLength: true, avgPeriodDuration: true },
+      }),
+    ]);
 
     const cycleLengthsById = new Map<string, number>();
     for (let index = 0; index < cycles.length - 1; index += 1) {
@@ -132,14 +138,14 @@ export class CyclesService {
     const averageDuration =
       durations.length > 0
         ? Math.round(durations.reduce((a, b) => a + b, 0) / durations.length)
-        : null;
+        : (profile?.avgPeriodDuration ?? null);
 
     const averageCycleLength =
       cycleLengths.length > 0
         ? Math.round(
             cycleLengths.reduce((a, b) => a + b, 0) / cycleLengths.length,
           )
-        : null;
+        : (profile?.avgCycleLength ?? null);
 
     const regularityVariation =
       cycleLengths.length > 0
@@ -178,7 +184,7 @@ export class CyclesService {
   }
 
   async getInsights(userId: string) {
-    const [cycles, symptomEntries] = await Promise.all([
+    const [cycles, symptomEntries, profile] = await Promise.all([
       this.prisma.cycleLog.findMany({
         where: { userId },
         orderBy: { startDate: 'asc' },
@@ -187,6 +193,10 @@ export class CyclesService {
         where: { userId },
         include: { symptom: true },
         orderBy: { date: 'desc' },
+      }),
+      this.prisma.profile.findUnique({
+        where: { userId },
+        select: { avgCycleLength: true, avgPeriodDuration: true },
       }),
     ]);
 
@@ -218,8 +228,12 @@ export class CyclesService {
       cycles: {
         totalCycles: cycles.length,
         completeCycles: completeCycles.length,
-        averageDuration: this.getAverage(periodDurations),
-        averageCycleLength: this.getAverage(cycleLengths),
+        averageDuration:
+          this.getAverage(periodDurations) ??
+          profile?.avgPeriodDuration ??
+          null,
+        averageCycleLength:
+          this.getAverage(cycleLengths) ?? profile?.avgCycleLength ?? null,
         regularity: this.getRegularityStatus(
           cycleLengths.length,
           regularityVariation,

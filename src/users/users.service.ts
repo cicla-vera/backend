@@ -22,6 +22,7 @@ export class UsersService {
       name: user.profile?.name,
       phone: user.profile?.phone,
       birthDate: user.profile?.birthDate,
+      cpf: user.profile?.cpf,
       createdAt: user.createdAt,
     };
   }
@@ -41,6 +42,7 @@ export class UsersService {
         name: dto.name,
         phone: dto.phone,
         birthDate: dto.birthDate ? new Date(dto.birthDate) : undefined,
+        cpf: dto.cpf,
       },
     });
 
@@ -50,6 +52,7 @@ export class UsersService {
       name: updated.name,
       phone: updated.phone,
       birthDate: updated.birthDate,
+      cpf: updated.cpf,
     };
   }
 }

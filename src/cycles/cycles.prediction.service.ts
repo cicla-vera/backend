@@ -16,23 +16,34 @@ export class CyclesPredictionService {
   constructor(private prisma: PrismaService) {}
 
   async predict(userId: string) {
-    const cycles = await this.prisma.cycleLog.findMany({
-      where: { userId, endDate: { not: null } },
-      orderBy: { startDate: 'desc' },
-      take: 6,
-    });
+    const [cycles, profile] = await Promise.all([
+      this.prisma.cycleLog.findMany({
+        where: { userId },
+        orderBy: { startDate: 'desc' },
+        take: 6,
+      }),
+      this.prisma.profile.findUnique({
+        where: { userId },
+        select: { avgCycleLength: true },
+      }),
+    ]);
 
-    if (cycles.length === 0) {
+    const completeCycles = cycles.filter((cycle) => cycle.endDate !== null);
+
+    if (completeCycles.length === 0) {
       return {
         nextPeriod: null,
         ovulationDate: null,
         fertileWindow: null,
-        message: 'Not enough data to predict. Log at least one complete cycle.',
+        message:
+          'Not enough data to predict. Log at least one complete cycle (with start and end dates).',
       };
     }
 
     const averageCycleLength =
-      this.getAverageCycleLength(cycles) ?? DEFAULT_CYCLE_LENGTH_DAYS;
+      this.getAverageCycleLength(cycles) ??
+      profile?.avgCycleLength ??
+      DEFAULT_CYCLE_LENGTH_DAYS;
 
     const lastCycle = cycles[0];
     const lastStartDate = new Date(lastCycle.startDate);
