@@ -56,7 +56,9 @@ export class AuthService {
       user: {
         id: user.id,
         email: user.email,
+        emailVerifiedAt: user.emailVerifiedAt,
         name: user.profile?.name,
+        phoneVerifiedAt: user.profile?.phoneVerifiedAt ?? null,
       },
     };
   }
@@ -84,7 +86,9 @@ export class AuthService {
       user: {
         id: user.id,
         email: user.email,
+        emailVerifiedAt: user.emailVerifiedAt,
         name: user.profile?.name,
+        phoneVerifiedAt: user.profile?.phoneVerifiedAt ?? null,
       },
     };
   }

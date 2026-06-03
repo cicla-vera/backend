@@ -21,6 +21,7 @@ import { DataImportModule } from './data-import/data-import.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { VeraModule } from './vera/vera.module';
 import { AiModule } from './ai/ai.module';
+import { AccountVerificationModule } from './account-verification/account-verification.module';
 
 @Module({
   imports: [
@@ -46,6 +47,7 @@ import { AiModule } from './ai/ai.module';
     NotificationsModule,
     VeraModule,
     AiModule,
+    AccountVerificationModule,
   ],
   controllers: [AppController],
   providers: [AppService],
