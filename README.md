@@ -129,6 +129,16 @@ Endpoints autenticados:
 
 Em desenvolvimento, o padrao e `ACCOUNT_VERIFICATION_PROVIDER=mock`, e o backend retorna `devCode` na resposta para testes locais sem custo. Em producao sem provider configurado, o adapter fica `disabled` e nao retorna codigo. Substitua por provider transacional de email e SMS/OTP antes de tornar a verificacao obrigatoria. Variaveis sugeridas para o proximo adapter real: `ACCOUNT_VERIFICATION_PROVIDER`, `ACCOUNT_EMAIL_FROM`, `ACCOUNT_EMAIL_PROVIDER_API_KEY`, `ACCOUNT_SMS_FROM` e credenciais do provedor SMS escolhido.
 
+## Cadastro e perfil
+
+O cadastro normaliza email para minusculas, nome, telefone brasileiro e CPF antes de persistir. Telefones aceitam formatos locais ou com `+55`, mas sao armazenados apenas com os 10 ou 11 digitos nacionais. CPF e validado pelos digitos verificadores, data de nascimento nao pode estar no futuro e conflitos de email/CPF retornam erro controlado sem registrar dados sensiveis em logs.
+
+`GET /users/me` e `PATCH /users/me` incluem `name`, `phone`, `birthDate`, `cpf`, `avgCycleLength` e `avgPeriodDuration`. As medias aceitas sao de 15 a 50 dias para o ciclo e de 1 a 15 dias para o periodo. Alterar o telefone remove `phoneVerifiedAt`; enviar o mesmo numero com outra formatacao preserva a verificacao.
+
+No cadastro, `initialCycleData` aceita `lastPeriodDate`, `lastPeriodEndDate`, `avgCycleLength` e `avgPeriodDuration`. A regularidade nao e persistida como declaracao inicial: ela e derivada dos ciclos observados por `/cycles/history` e `/cycles/insights`.
+
+Smoke recomendado: execute `npm run smoke:profile` e `npm run smoke:cycles` no repositorio mobile com este backend ativo.
+
 ## Serviço de IA
 
 O backend conversa com o microsserviço Python/FastAPI por `AI_SERVICE_URL`. O cliente HTTP usa timeout configurável em `AI_SERVICE_TIMEOUT_MS` e traduz falhas externas em exceptions controladas, para que upload, alerta e mobile não dependam de erro bruto do serviço de IA.

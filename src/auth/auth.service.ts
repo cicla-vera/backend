@@ -9,6 +9,13 @@ import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
 import { UnauthorizedException } from '@nestjs/common';
 import * as bcrypt from 'bcrypt';
+import {
+  normalizeEmail,
+  normalizeName,
+  normalizeOptionalCpf,
+  normalizeOptionalPhone,
+  parseOptionalBirthDate,
+} from '../users/profile-data';
 
 @Injectable()
 export class AuthService {
@@ -18,26 +25,43 @@ export class AuthService {
   ) {}
 
   async register(dto: RegisterDto) {
-    const exists = await this.prisma.user.findUnique({
-      where: { email: dto.email },
-    });
+    const email = normalizeEmail(dto.email);
+    const name = normalizeName(dto.name);
+    const phone = normalizeOptionalPhone(dto.phone);
+    const birthDate = parseOptionalBirthDate(dto.birthDate);
+    const cpf = normalizeOptionalCpf(dto.cpf);
+    const [exists, cpfOwner] = await Promise.all([
+      this.prisma.user.findUnique({
+        where: { email },
+      }),
+      cpf
+        ? this.prisma.profile.findUnique({
+            where: { cpf },
+            select: { userId: true },
+          })
+        : Promise.resolve(null),
+    ]);
 
     if (exists) {
       throw new ConflictException('Email already in use');
+    }
+
+    if (cpfOwner) {
+      throw new ConflictException('CPF already in use');
     }
 
     const hashedPassword = await bcrypt.hash(dto.password, 10);
 
     const user = await this.prisma.user.create({
       data: {
-        email: dto.email,
+        email,
         password: hashedPassword,
         profile: {
           create: {
-            name: dto.name,
-            phone: dto.phone,
-            birthDate: dto.birthDate ? new Date(dto.birthDate) : null,
-            cpf: dto.cpf,
+            name,
+            phone,
+            birthDate: birthDate ?? null,
+            cpf,
             avgCycleLength: dto.initialCycleData?.avgCycleLength,
             avgPeriodDuration: dto.initialCycleData?.avgPeriodDuration,
           },
@@ -64,8 +88,9 @@ export class AuthService {
   }
 
   async login(dto: LoginDto) {
+    const email = normalizeEmail(dto.email);
     const user = await this.prisma.user.findUnique({
-      where: { email: dto.email },
+      where: { email },
       include: { profile: true },
     });
 
