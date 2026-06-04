@@ -1,6 +1,16 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  ConflictException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { UpdateProfileDto } from './dto/update-profile.dto';
+import {
+  normalizeName,
+  normalizeOptionalCpf,
+  normalizeOptionalPhone,
+  parseOptionalBirthDate,
+} from './profile-data';
 
 @Injectable()
 export class UsersService {
@@ -25,6 +35,8 @@ export class UsersService {
       phoneVerifiedAt: user.profile?.phoneVerifiedAt ?? null,
       birthDate: user.profile?.birthDate,
       cpf: user.profile?.cpf,
+      avgCycleLength: user.profile?.avgCycleLength,
+      avgPeriodDuration: user.profile?.avgPeriodDuration,
       createdAt: user.createdAt,
     };
   }
@@ -39,17 +51,34 @@ export class UsersService {
       throw new NotFoundException('User not found');
     }
 
+    const name = dto.name !== undefined ? normalizeName(dto.name) : undefined;
+    const phone = normalizeOptionalPhone(dto.phone);
+    const birthDate = parseOptionalBirthDate(dto.birthDate);
+    const cpf = normalizeOptionalCpf(dto.cpf);
+    const cpfOwner = cpf
+      ? await this.prisma.profile.findUnique({
+          where: { cpf },
+          select: { userId: true },
+        })
+      : null;
+
+    if (cpfOwner && cpfOwner.userId !== userId) {
+      throw new ConflictException('CPF already in use');
+    }
+
     const updated = await this.prisma.profile.update({
       where: { userId },
       data: {
-        name: dto.name,
-        phone: dto.phone,
+        name,
+        phone,
         phoneVerifiedAt:
-          dto.phone !== undefined && dto.phone !== user.profile?.phone
+          phone !== undefined && phone !== user.profile?.phone
             ? null
             : undefined,
-        birthDate: dto.birthDate ? new Date(dto.birthDate) : undefined,
-        cpf: dto.cpf,
+        birthDate,
+        cpf,
+        avgCycleLength: dto.avgCycleLength,
+        avgPeriodDuration: dto.avgPeriodDuration,
       },
     });
 
@@ -62,6 +91,8 @@ export class UsersService {
       phoneVerifiedAt: updated.phoneVerifiedAt,
       birthDate: updated.birthDate,
       cpf: updated.cpf,
+      avgCycleLength: updated.avgCycleLength,
+      avgPeriodDuration: updated.avgPeriodDuration,
     };
   }
 }
