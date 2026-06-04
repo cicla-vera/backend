@@ -7,5 +7,5 @@ export class UpdateCycleDto {
 
   @IsOptional()
   @IsDateString()
-  endDate?: string;
+  endDate?: string | null;
 }
