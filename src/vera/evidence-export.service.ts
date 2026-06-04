@@ -70,6 +70,11 @@ type EvidenceExportRecordManifest = {
   contentHash: string;
   hashAlgorithm: string;
   hashedAt: string;
+  clientUploadId: string | null;
+  chunkSequenceId: string | null;
+  chunkIndex: number | null;
+  previousChunkHash: string | null;
+  chunkChainStatus: string;
   metadata: Prisma.JsonValue | null;
   hiddenFromUserAt: string | null;
   retentionUntil: string | null;
@@ -349,6 +354,11 @@ export class EvidenceExportService {
       contentHash: record.contentHash,
       hashAlgorithm: record.hashAlgorithm,
       hashedAt: this.toIso(record.hashedAt),
+      clientUploadId: record.clientUploadId,
+      chunkSequenceId: record.chunkSequenceId,
+      chunkIndex: record.chunkIndex,
+      previousChunkHash: record.previousChunkHash,
+      chunkChainStatus: record.chunkChainStatus,
       metadata: record.metadata,
       hiddenFromUserAt: this.toIsoOrNull(record.hiddenFromUserAt),
       retentionUntil: this.toIsoOrNull(record.retentionUntil),
@@ -474,8 +484,13 @@ export class EvidenceExportService {
 
   private toAudioChunkRecord(record: EvidenceRecord): AudioChunkRecord | null {
     const metadata = this.getJsonObject(record.metadata);
-    const sequenceId = this.getStringValue(metadata, 'audioChunkSequenceId');
-    const chunkHash = this.getStringValue(metadata, 'audioChunkHash');
+    const sequenceId =
+      record.chunkSequenceId ??
+      this.getStringValue(metadata, 'audioChunkSequenceId');
+    const chunkHash =
+      record.chunkSequenceId == null
+        ? this.getStringValue(metadata, 'audioChunkHash')
+        : record.contentHash;
 
     if (!sequenceId || !chunkHash) {
       return null;
@@ -485,11 +500,14 @@ export class EvidenceExportService {
       evidenceRecordId: record.id,
       sequenceId,
       chunkHash,
-      previousChunkHash: this.getStringValue(
-        metadata,
-        'audioPreviousChunkHash',
-      ),
-      chunkIndex: this.getNumberValue(metadata, 'audioChunkIndex'),
+      previousChunkHash:
+        record.chunkSequenceId == null
+          ? this.getStringValue(metadata, 'audioPreviousChunkHash')
+          : record.previousChunkHash,
+      chunkIndex:
+        record.chunkSequenceId == null
+          ? this.getNumberValue(metadata, 'audioChunkIndex')
+          : record.chunkIndex,
       createdAt: record.createdAt,
     };
   }
