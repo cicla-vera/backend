@@ -9,13 +9,15 @@ datasource db {
 // ─── AUTH ────────────────────────────────────────────────────────────────────
 
 model User {
-  id        String   @id @default(uuid())
-  email     String   @unique
-  password  String
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id              String    @id @default(uuid())
+  email           String    @unique
+  password        String
+  emailVerifiedAt DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
 
   profile                Profile?
+  accountVerificationCodes AccountVerificationCode[]
   cycleLogs              CycleLog[]
   symptomEntries         SymptomEntry[]
   moodEntries            MoodEntry[]
@@ -48,12 +50,36 @@ model Profile {
   user              User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   name              String?
   phone             String?
+  phoneVerifiedAt   DateTime?
   birthDate         DateTime?
   cpf               String?   @unique
   avgCycleLength    Int?
   avgPeriodDuration Int?
   createdAt         DateTime  @default(now())
   updatedAt         DateTime  @updatedAt
+}
+
+enum AccountVerificationChannel {
+  EMAIL
+  PHONE
+}
+
+model AccountVerificationCode {
+  id           String                     @id @default(uuid())
+  userId       String
+  user         User                       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  channel      AccountVerificationChannel
+  destination  String
+  codeHash     String
+  expiresAt    DateTime
+  consumedAt   DateTime?
+  attemptCount Int                        @default(0)
+  createdAt    DateTime                   @default(now())
+  updatedAt    DateTime                   @updatedAt
+
+  @@index([userId, channel, createdAt])
+  @@index([userId, channel, expiresAt])
+  @@index([destination, channel, createdAt])
 }
 
 // ─── CYCLE ───────────────────────────────────────────────────────────────────

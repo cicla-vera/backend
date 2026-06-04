@@ -16,7 +16,8 @@ describe('AuthService', () => {
   type RegisteredUser = {
     id: string;
     email: string;
-    profile: { name: string | null } | null;
+    emailVerifiedAt: Date | null;
+    profile: { name: string | null; phoneVerifiedAt: Date | null } | null;
   };
   type UserCreateArgs = {
     data: {
@@ -75,7 +76,8 @@ describe('AuthService', () => {
     user.create.mockResolvedValue({
       id: 'user-id',
       email: 'ana@example.com',
-      profile: { name: 'Ana' },
+      emailVerifiedAt: null,
+      profile: { name: 'Ana', phoneVerifiedAt: null },
     });
 
     await service.register({
@@ -130,7 +132,8 @@ describe('AuthService', () => {
     user.create.mockResolvedValue({
       id: 'user-id',
       email: 'ana@example.com',
-      profile: { name: 'Ana' },
+      emailVerifiedAt: null,
+      profile: { name: 'Ana', phoneVerifiedAt: null },
     });
 
     await service.register({

@@ -115,6 +115,20 @@ Quando uma sessão Vera entra em `CRITICAL`, o backend dispara automaticamente o
 
 O backend envia push pelo Expo Push Service, sem segredo de servidor adicional. Para testar em desenvolvimento, use um dev build do mobile que gere um `ExpoPushToken`, registre o token em `POST /notifications/devices` e dispare `POST /notifications/test`. A Expo pode retornar tickets com erro `DeviceNotRegistered`; nesse caso o backend desativa o device para evitar novas tentativas com token inválido. Lembretes reais podem ser conferidos em `GET /notifications/reminders/preview` e disparados manualmente em `POST /notifications/reminders/send-due`.
 
+## Verificacao de conta
+
+O MVP trata verificacao de email e telefone como opcional: cadastro e login continuam funcionando, mas `emailVerifiedAt` e `phoneVerifiedAt` ficam disponiveis para o mobile mostrar status e incentivar confirmacao.
+
+Endpoints autenticados:
+
+- `GET /account-verification/status` retorna status de email e telefone, com telefone mascarado.
+- `POST /account-verification/email/request` gera um codigo de 6 digitos para o email da conta.
+- `POST /account-verification/email/confirm` confirma `{ "code": "123456" }`.
+- `POST /account-verification/phone/request` gera um codigo para o telefone salvo no perfil.
+- `POST /account-verification/phone/confirm` confirma `{ "code": "123456" }`.
+
+Em desenvolvimento, o padrao e `ACCOUNT_VERIFICATION_PROVIDER=mock`, e o backend retorna `devCode` na resposta para testes locais sem custo. Em producao sem provider configurado, o adapter fica `disabled` e nao retorna codigo. Substitua por provider transacional de email e SMS/OTP antes de tornar a verificacao obrigatoria. Variaveis sugeridas para o proximo adapter real: `ACCOUNT_VERIFICATION_PROVIDER`, `ACCOUNT_EMAIL_FROM`, `ACCOUNT_EMAIL_PROVIDER_API_KEY`, `ACCOUNT_SMS_FROM` e credenciais do provedor SMS escolhido.
+
 ## Serviço de IA
 
 O backend conversa com o microsserviço Python/FastAPI por `AI_SERVICE_URL`. O cliente HTTP usa timeout configurável em `AI_SERVICE_TIMEOUT_MS` e traduz falhas externas em exceptions controladas, para que upload, alerta e mobile não dependam de erro bruto do serviço de IA.

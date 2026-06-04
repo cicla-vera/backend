@@ -19,8 +19,10 @@ export class UsersService {
     return {
       id: user.id,
       email: user.email,
+      emailVerifiedAt: user.emailVerifiedAt,
       name: user.profile?.name,
       phone: user.profile?.phone,
+      phoneVerifiedAt: user.profile?.phoneVerifiedAt ?? null,
       birthDate: user.profile?.birthDate,
       cpf: user.profile?.cpf,
       createdAt: user.createdAt,
@@ -30,6 +32,7 @@ export class UsersService {
   async updateMe(userId: string, dto: UpdateProfileDto) {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
+      include: { profile: true },
     });
 
     if (!user) {
@@ -41,6 +44,10 @@ export class UsersService {
       data: {
         name: dto.name,
         phone: dto.phone,
+        phoneVerifiedAt:
+          dto.phone !== undefined && dto.phone !== user.profile?.phone
+            ? null
+            : undefined,
         birthDate: dto.birthDate ? new Date(dto.birthDate) : undefined,
         cpf: dto.cpf,
       },
@@ -49,8 +56,10 @@ export class UsersService {
     return {
       id: userId,
       email: user.email,
+      emailVerifiedAt: user.emailVerifiedAt,
       name: updated.name,
       phone: updated.phone,
+      phoneVerifiedAt: updated.phoneVerifiedAt,
       birthDate: updated.birthDate,
       cpf: updated.cpf,
     };
