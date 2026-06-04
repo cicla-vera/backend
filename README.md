@@ -97,6 +97,18 @@ O backend usa `SUPABASE_SERVICE_ROLE_KEY` apenas no servidor para upload/downloa
 
 Evidências removidas pelo app são ocultadas da visão da usuária, mas o arquivo no Storage não é apagado imediatamente. O backend marca `hiddenFromUserAt` e agenda a retenção com `retentionUntil`; a exclusão definitiva via `deletedAt` fica preparada para um job administrativo futuro.
 
+### Ingestão verificável de chunks de áudio
+
+Uploads da fila do mobile usam `queuedEvidenceUploadId` como chave idempotente. Repetir o mesmo upload retorna o registro existente sem criar outra evidência; reutilizar o identificador para conteúdo diferente é rejeitado antes do envio ao Storage.
+
+Chunks da sentinela de áudio formalizam `chunkSequenceId`, `chunkIndex`, `previousChunkHash` e `chunkChainStatus`. O backend recalcula o SHA-256, rejeita hash divergente e classifica cada elo como `ROOT`, `VERIFIED` ou `PENDING_PREVIOUS`. O estado pendente permite que pré-roll e retries cheguem fora de ordem; quando o chunk anterior chega, o próximo elo é reconciliado e recebe um evento de auditoria `CHUNK_CHAIN_VERIFIED`.
+
+Após atualizar o backend, aplique a migração antes de testar uploads:
+
+```bash
+npx prisma migrate deploy
+```
+
 ## Pacote tecnico de evidencia Vera
 
 O backend prepara a exportacao futura por meio do servico interno `EvidenceExportService`, sem endpoint publico no MVP. O manifesto gerado inclui sessao Vera, hashes SHA-256 dos arquivos, metadados, eventos de timeline, amostras de localizacao, resultados de IA e eventos de auditoria encadeados por hash.

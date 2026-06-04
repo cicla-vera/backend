@@ -347,7 +347,15 @@ enum EvidenceType {
 enum EvidenceAuditAction {
   UPLOADED
   HASH_VERIFIED
+  CHUNK_CHAIN_VERIFIED
   HIDDEN_FROM_USER
+}
+
+enum EvidenceChunkChainStatus {
+  NOT_APPLICABLE
+  ROOT
+  VERIFIED
+  PENDING_PREVIOUS
 }
 
 enum LocationSampleSource {
@@ -485,32 +493,41 @@ model AlertLocationSample {
 }
 
 model EvidenceRecord {
-  id               String                @id @default(uuid())
-  userId           String
-  user             User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
-  alertSessionId   String
-  alertSession     AlertSession          @relation(fields: [alertSessionId], references: [id], onDelete: Cascade)
-  type             EvidenceType
-  size             Int
-  mimeType         String
-  originalName     String?
-  storagePath      String                @unique
-  contentHash      String
-  hashAlgorithm    String                @default("SHA-256")
-  hashedAt         DateTime              @default(now())
-  hiddenFromUserAt DateTime?
-  retentionUntil   DateTime?
-  deletedAt        DateTime?
-  metadata         Json?
-  createdAt        DateTime              @default(now())
-  auditEvents      EvidenceAuditEvent[]
-  analyses         EvidenceAnalysis[]
-  locationSamples  AlertLocationSample[]
+  id                String                   @id @default(uuid())
+  userId            String
+  user              User                     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  alertSessionId    String
+  alertSession      AlertSession             @relation(fields: [alertSessionId], references: [id], onDelete: Cascade)
+  type              EvidenceType
+  size              Int
+  mimeType          String
+  originalName      String?
+  storagePath       String                   @unique
+  contentHash       String
+  hashAlgorithm     String                   @default("SHA-256")
+  hashedAt          DateTime                 @default(now())
+  clientUploadId    String?
+  chunkSequenceId   String?
+  chunkIndex        Int?
+  previousChunkHash String?
+  chunkChainStatus  EvidenceChunkChainStatus @default(NOT_APPLICABLE)
+  hiddenFromUserAt  DateTime?
+  retentionUntil    DateTime?
+  deletedAt         DateTime?
+  metadata          Json?
+  createdAt         DateTime                 @default(now())
+  auditEvents       EvidenceAuditEvent[]
+  analyses          EvidenceAnalysis[]
+  locationSamples   AlertLocationSample[]
 
+  @@unique([userId, clientUploadId])
+  @@unique([alertSessionId, chunkSequenceId, chunkIndex])
   @@index([userId, createdAt])
   @@index([userId, hiddenFromUserAt])
   @@index([alertSessionId, createdAt])
+  @@index([alertSessionId, chunkSequenceId, chunkIndex])
   @@index([contentHash])
+  @@index([chunkChainStatus])
   @@index([retentionUntil])
   @@index([deletedAt])
   @@index([type])

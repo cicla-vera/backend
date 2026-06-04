@@ -6,6 +6,7 @@ import {
   AlertLevel,
   AlertStatus,
   AlertTrigger,
+  EvidenceChunkChainStatus,
   EvidenceType,
   type AlertEvent,
   type AlertSession,
@@ -32,17 +33,17 @@ type EvidenceRecordCreateArgs = {
     contentHash: string;
     hashAlgorithm: string;
     hashedAt: Date;
+    clientUploadId: string | null;
+    chunkSequenceId: string | null;
+    chunkIndex: number | null;
+    previousChunkHash: string | null;
+    chunkChainStatus: EvidenceChunkChainStatus;
     metadata?: Record<string, string | number | boolean | null>;
   };
 };
 
 type EvidenceRecordFindFirstArgs = {
-  where: {
-    id: string;
-    userId: string;
-    alertSessionId: string;
-    deletedAt: null;
-  };
+  where: Record<string, unknown>;
 };
 
 type EvidenceRecordFindManyArgs = {
@@ -58,8 +59,9 @@ type EvidenceRecordFindManyArgs = {
 type EvidenceRecordUpdateArgs = {
   where: { id: string };
   data: {
-    hiddenFromUserAt: Date;
-    retentionUntil: Date;
+    hiddenFromUserAt?: Date;
+    retentionUntil?: Date;
+    chunkChainStatus?: EvidenceChunkChainStatus;
   };
 };
 
@@ -69,14 +71,7 @@ type AlertEventCreateArgs = {
     alertSessionId: string;
     type: AlertEventType;
     message: string;
-    metadata: {
-      evidenceRecordId: string;
-      evidenceType: EvidenceType;
-      mimeType: string;
-      size: number;
-      contentHash: string;
-      hashAlgorithm: string;
-    };
+    metadata: Record<string, string | number | boolean | null>;
   };
 };
 
@@ -103,6 +98,10 @@ type EvidenceAuditEventCreateArgs = {
 type TransactionClientMock = {
   evidenceRecord: {
     create: jest.Mock<Promise<EvidenceRecord>, [EvidenceRecordCreateArgs]>;
+    findFirst: jest.Mock<
+      Promise<EvidenceRecord | null>,
+      [EvidenceRecordFindFirstArgs]
+    >;
     update: jest.Mock<Promise<EvidenceRecord>, [EvidenceRecordUpdateArgs]>;
   };
   evidenceAuditEvent: {
@@ -202,6 +201,11 @@ const baseEvidence = (
   contentHash: audioHash,
   hashAlgorithm: 'SHA-256',
   hashedAt: new Date('2026-05-24T00:00:00.000Z'),
+  clientUploadId: null,
+  chunkSequenceId: null,
+  chunkIndex: null,
+  previousChunkHash: null,
+  chunkChainStatus: EvidenceChunkChainStatus.NOT_APPLICABLE,
   hiddenFromUserAt: null,
   retentionUntil: null,
   deletedAt: null,
@@ -266,6 +270,10 @@ describe('EvidenceService', () => {
     tx = {
       evidenceRecord: {
         create: jest.fn<Promise<EvidenceRecord>, [EvidenceRecordCreateArgs]>(),
+        findFirst: jest.fn<
+          Promise<EvidenceRecord | null>,
+          [EvidenceRecordFindFirstArgs]
+        >(),
         update: jest.fn<Promise<EvidenceRecord>, [EvidenceRecordUpdateArgs]>(),
       },
       evidenceAuditEvent: {
@@ -336,6 +344,11 @@ describe('EvidenceService', () => {
           contentHash: data.contentHash,
           hashAlgorithm: data.hashAlgorithm,
           hashedAt: data.hashedAt,
+          clientUploadId: data.clientUploadId,
+          chunkSequenceId: data.chunkSequenceId,
+          chunkIndex: data.chunkIndex,
+          previousChunkHash: data.previousChunkHash,
+          chunkChainStatus: data.chunkChainStatus,
           metadata: data.metadata ?? null,
         }),
       );
@@ -343,11 +356,19 @@ describe('EvidenceService', () => {
     tx.evidenceRecord.update.mockImplementation(({ data }) => {
       return Promise.resolve(
         baseEvidence({
-          hiddenFromUserAt: data.hiddenFromUserAt,
-          retentionUntil: data.retentionUntil,
+          ...(data.hiddenFromUserAt
+            ? { hiddenFromUserAt: data.hiddenFromUserAt }
+            : {}),
+          ...(data.retentionUntil
+            ? { retentionUntil: data.retentionUntil }
+            : {}),
+          ...(data.chunkChainStatus
+            ? { chunkChainStatus: data.chunkChainStatus }
+            : {}),
         }),
       );
     });
+    tx.evidenceRecord.findFirst.mockResolvedValue(null);
     tx.alertEvent.create.mockResolvedValue(baseEvent());
     tx.evidenceAuditEvent.findFirst.mockResolvedValue(null);
     tx.evidenceAuditEvent.create.mockImplementation(({ data }) => {
@@ -458,6 +479,10 @@ describe('EvidenceService', () => {
           size: audioBuffer.byteLength,
           contentHash: audioHash,
           hashAlgorithm: 'SHA-256',
+          clientUploadId: null,
+          chunkSequenceId: null,
+          chunkIndex: null,
+          chunkChainStatus: EvidenceChunkChainStatus.NOT_APPLICABLE,
         },
       },
     });
@@ -484,6 +509,11 @@ describe('EvidenceService', () => {
         evidenceType: EvidenceType.AUDIO,
         mimeType: 'audio/wav',
         size: audioBuffer.byteLength,
+        clientUploadId: null,
+        chunkSequenceId: null,
+        chunkIndex: null,
+        previousChunkHash: null,
+        chunkChainStatus: EvidenceChunkChainStatus.NOT_APPLICABLE,
       },
     });
     expect(auditCreateArgs.data.eventHash).toHaveLength(64);
@@ -733,6 +763,17 @@ describe('EvidenceService', () => {
 
   it('accepts extended Vera audio chunk metadata', async () => {
     prisma.alertSession.findFirst.mockResolvedValue(baseSession());
+    prisma.evidenceRecord.findFirst
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(
+        baseEvidence({
+          id: 'previous-evidence-id',
+          contentHash: 'b'.repeat(64),
+          chunkSequenceId: 'vera-audio-20260603T120000Z',
+          chunkIndex: 2,
+          chunkChainStatus: EvidenceChunkChainStatus.ROOT,
+        }),
+      );
 
     await service.upload(
       'user-id',
@@ -742,7 +783,7 @@ describe('EvidenceService', () => {
         metadata: JSON.stringify({
           accuracyMeters: 8,
           audioChunkDurationMs: 8000,
-          audioChunkHash: 'a'.repeat(64),
+          audioChunkHash: audioHash,
           audioChunkIndex: 3,
           audioChunkSequenceId: 'vera-audio-20260603T120000Z',
           audioLoudSampleRatio: 0.44,
@@ -772,9 +813,217 @@ describe('EvidenceService', () => {
     const createArgs = tx.evidenceRecord.create.mock.calls[0]?.[0];
 
     expect(createArgs?.data.metadata).toMatchObject({
-      audioChunkHash: 'a'.repeat(64),
+      audioChunkHash: audioHash,
       audioPreviousChunkHash: 'b'.repeat(64),
       audioChunkSequenceId: 'vera-audio-20260603T120000Z',
+    });
+    expect(createArgs?.data).toMatchObject({
+      chunkSequenceId: 'vera-audio-20260603T120000Z',
+      chunkIndex: 3,
+      previousChunkHash: 'b'.repeat(64),
+      chunkChainStatus: EvidenceChunkChainStatus.VERIFIED,
+    });
+  });
+
+  it('returns the existing record when a queued upload is retried', async () => {
+    const existing = baseEvidence({ clientUploadId: 'queue-id' });
+    prisma.evidenceRecord.findFirst.mockResolvedValue(existing);
+
+    const result = await service.upload(
+      'user-id',
+      'session-id',
+      {
+        type: EvidenceType.AUDIO,
+        metadata: JSON.stringify({ queuedEvidenceUploadId: 'queue-id' }),
+      },
+      audioFile(),
+    );
+
+    expect(result.id).toBe(existing.id);
+    expect(prisma.alertSession.findFirst).not.toHaveBeenCalled();
+    expect(evidenceStorage.uploadEvidence).not.toHaveBeenCalled();
+    expect(tx.evidenceRecord.create).not.toHaveBeenCalled();
+  });
+
+  it('rejects a queued upload identifier reused for different content', async () => {
+    prisma.evidenceRecord.findFirst.mockResolvedValue(
+      baseEvidence({
+        clientUploadId: 'queue-id',
+        contentHash: 'c'.repeat(64),
+      }),
+    );
+
+    await expect(
+      service.upload(
+        'user-id',
+        'session-id',
+        {
+          type: EvidenceType.AUDIO,
+          metadata: JSON.stringify({ queuedEvidenceUploadId: 'queue-id' }),
+        },
+        audioFile(),
+      ),
+    ).rejects.toBeInstanceOf(BadRequestException);
+
+    expect(evidenceStorage.uploadEvidence).not.toHaveBeenCalled();
+  });
+
+  it('rejects audio chunk metadata with a hash that differs from the file', async () => {
+    await expect(
+      service.upload(
+        'user-id',
+        'session-id',
+        {
+          type: EvidenceType.AUDIO,
+          metadata: JSON.stringify({
+            audioChunkHash: 'a'.repeat(64),
+            audioChunkIndex: 1,
+            audioChunkSequenceId: 'sequence-id',
+            audioPreviousChunkHash: null,
+          }),
+        },
+        audioFile(),
+      ),
+    ).rejects.toBeInstanceOf(BadRequestException);
+
+    expect(prisma.evidenceRecord.findFirst).not.toHaveBeenCalled();
+    expect(evidenceStorage.uploadEvidence).not.toHaveBeenCalled();
+  });
+
+  it('stores the first audio chunk in a sequence as a root', async () => {
+    prisma.evidenceRecord.findFirst.mockResolvedValue(null);
+    prisma.alertSession.findFirst.mockResolvedValue(baseSession());
+
+    await service.upload(
+      'user-id',
+      'session-id',
+      {
+        type: EvidenceType.AUDIO,
+        metadata: JSON.stringify({
+          audioChunkHash: audioHash,
+          audioChunkIndex: 7,
+          audioChunkSequenceId: 'sequence-id',
+          audioPreviousChunkHash: null,
+        }),
+      },
+      audioFile(),
+    );
+
+    expect(tx.evidenceRecord.create.mock.calls[0]?.[0].data).toMatchObject({
+      chunkSequenceId: 'sequence-id',
+      chunkIndex: 7,
+      previousChunkHash: null,
+      chunkChainStatus: EvidenceChunkChainStatus.ROOT,
+    });
+  });
+
+  it('stores an out-of-order audio chunk as pending previous', async () => {
+    prisma.evidenceRecord.findFirst.mockResolvedValue(null);
+    prisma.alertSession.findFirst.mockResolvedValue(baseSession());
+
+    await service.upload(
+      'user-id',
+      'session-id',
+      {
+        type: EvidenceType.AUDIO,
+        metadata: JSON.stringify({
+          audioChunkHash: audioHash,
+          audioChunkIndex: 8,
+          audioChunkSequenceId: 'sequence-id',
+          audioPreviousChunkHash: 'b'.repeat(64),
+        }),
+      },
+      audioFile(),
+    );
+
+    expect(tx.evidenceRecord.create.mock.calls[0]?.[0].data).toMatchObject({
+      chunkChainStatus: EvidenceChunkChainStatus.PENDING_PREVIOUS,
+    });
+  });
+
+  it('rejects an audio chunk whose previous hash disagrees with the preceding chunk', async () => {
+    prisma.evidenceRecord.findFirst
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(
+        baseEvidence({
+          contentHash: 'c'.repeat(64),
+          chunkSequenceId: 'sequence-id',
+          chunkIndex: 7,
+        }),
+      );
+    prisma.alertSession.findFirst.mockResolvedValue(baseSession());
+
+    await expect(
+      service.upload(
+        'user-id',
+        'session-id',
+        {
+          type: EvidenceType.AUDIO,
+          metadata: JSON.stringify({
+            audioChunkHash: audioHash,
+            audioChunkIndex: 8,
+            audioChunkSequenceId: 'sequence-id',
+            audioPreviousChunkHash: 'b'.repeat(64),
+          }),
+        },
+        audioFile(),
+      ),
+    ).rejects.toBeInstanceOf(BadRequestException);
+
+    expect(evidenceStorage.uploadEvidence).not.toHaveBeenCalled();
+  });
+
+  it('reconciles a pending child when its previous chunk arrives', async () => {
+    prisma.evidenceRecord.findFirst.mockResolvedValue(null);
+    prisma.alertSession.findFirst.mockResolvedValue(baseSession());
+    const pendingChild = baseEvidence({
+      id: 'pending-child-id',
+      contentHash: 'c'.repeat(64),
+      chunkSequenceId: 'sequence-id',
+      chunkIndex: 8,
+      previousChunkHash: audioHash,
+      chunkChainStatus: EvidenceChunkChainStatus.PENDING_PREVIOUS,
+    });
+    tx.evidenceRecord.findFirst.mockResolvedValue(pendingChild);
+    tx.evidenceRecord.update.mockResolvedValue(
+      baseEvidence({
+        ...pendingChild,
+        chunkChainStatus: EvidenceChunkChainStatus.VERIFIED,
+      }),
+    );
+
+    await service.upload(
+      'user-id',
+      'session-id',
+      {
+        type: EvidenceType.AUDIO,
+        metadata: JSON.stringify({
+          audioChunkHash: audioHash,
+          audioChunkIndex: 7,
+          audioChunkSequenceId: 'sequence-id',
+          audioPreviousChunkHash: null,
+        }),
+      },
+      audioFile(),
+    );
+
+    expect(tx.evidenceRecord.update).toHaveBeenCalledWith({
+      where: { id: 'pending-child-id' },
+      data: { chunkChainStatus: EvidenceChunkChainStatus.VERIFIED },
+    });
+    const chainAuditArgs = tx.evidenceAuditEvent.create.mock.calls.at(-1)?.[0];
+
+    if (!chainAuditArgs) {
+      throw new Error('Expected chunk chain audit event');
+    }
+
+    expect(chainAuditArgs.data).toMatchObject({
+      evidenceRecordId: 'pending-child-id',
+      action: EvidenceAuditAction.CHUNK_CHAIN_VERIFIED,
+      metadata: {
+        previousEvidenceRecordId: 'evidence-id',
+        chunkChainStatus: EvidenceChunkChainStatus.VERIFIED,
+      },
     });
   });
 
