@@ -139,6 +139,19 @@ No cadastro, `initialCycleData` aceita `lastPeriodDate`, `lastPeriodEndDate`, `a
 
 Smoke recomendado: execute `npm run smoke:profile` e `npm run smoke:cycles` no repositorio mobile com este backend ativo.
 
+## Regras de ciclos
+
+Os endpoints de ciclos rejeitam `endDate` anterior a `startDate` e periodos que sobreponham outro registro da mesma usuaria. Um ciclo sem `endDate` e considerado aberto e impede a criacao de outro ciclo posterior ate ser fechado, corrigido ou removido.
+
+`PATCH /cycles/:id` recalcula `duration` mesmo quando apenas uma das datas muda. Para reabrir um periodo marcado como encerrado, envie `{ "endDate": null }`; a operacao tambem e rejeitada se isso sobrepor um registro posterior.
+
+Smoke manual recomendado:
+
+1. Crie um ciclo aberto com `POST /cycles` e apenas `startDate`.
+2. Feche-o com `PATCH /cycles/:id` enviando apenas `endDate` e confirme que `duration` foi calculada.
+3. Tente criar um periodo sobreposto e confirme resposta `400`.
+4. Reabra com `PATCH /cycles/:id` e `{ "endDate": null }`, depois remova com `DELETE /cycles/:id`.
+
 ## Serviço de IA
 
 O backend conversa com o microsserviço Python/FastAPI por `AI_SERVICE_URL`. O cliente HTTP usa timeout configurável em `AI_SERVICE_TIMEOUT_MS` e traduz falhas externas em exceptions controladas, para que upload, alerta e mobile não dependam de erro bruto do serviço de IA.
