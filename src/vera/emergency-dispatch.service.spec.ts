@@ -335,18 +335,20 @@ describe('EmergencyDispatchService', () => {
       'sms',
       'whatsapp',
     ]);
-    messagingProvider.sendMessage.mockImplementation(async (input) =>
-      input.channel === 'sms'
-        ? sentDelivery({
-            channel: 'sms',
-            provider: 'mock',
-            providerMessageId: 'sms-message-id',
-          })
-        : failedDelivery({
-            channel: 'whatsapp',
-            provider: 'twilio',
-            failureReason: 'twilio_http_400',
-          }),
+    messagingProvider.sendMessage.mockImplementation((input) =>
+      Promise.resolve(
+        input.channel === 'sms'
+          ? sentDelivery({
+              channel: 'sms',
+              provider: 'mock',
+              providerMessageId: 'sms-message-id',
+            })
+          : failedDelivery({
+              channel: 'whatsapp',
+              provider: 'twilio',
+              failureReason: 'twilio_http_400',
+            }),
+      ),
     );
 
     const result = await service.dispatchCriticalAlert('user-id', 'session-id');

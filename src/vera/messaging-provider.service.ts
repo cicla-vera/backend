@@ -45,12 +45,17 @@ const DEFAULT_DISPATCH_CHANNELS: EmergencyDeliveryChannel[] = ['sms'];
 @Injectable()
 export class MessagingProviderService {
   async sendSms(input: SendSmsInput): Promise<SendSmsResult> {
-    const { channel: _channel, ...result } = await this.sendMessage({
+    const result = await this.sendMessage({
       ...input,
       channel: 'sms',
     });
 
-    return result;
+    return {
+      failureReason: result.failureReason,
+      provider: result.provider,
+      providerMessageId: result.providerMessageId,
+      status: result.status,
+    };
   }
 
   async sendMessage(input: SendMessageInput): Promise<SendMessageResult> {

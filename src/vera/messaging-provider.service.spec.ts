@@ -136,7 +136,7 @@ describe('MessagingProviderService', () => {
       throw new Error('Expected Twilio fetch call');
     }
 
-    const [_url, init] = firstCall;
+    const [, init] = firstCall;
     const body = init?.body as URLSearchParams;
 
     expect(body.get('To')).toBe('whatsapp:+5585999999999');
