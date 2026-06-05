@@ -13,7 +13,11 @@ import {
   type Profile,
 } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
-import { MessagingProviderService } from './messaging-provider.service';
+import {
+  type EmergencyDeliveryChannel,
+  MessagingProviderService,
+  type SendMessageResult,
+} from './messaging-provider.service';
 
 type AlertSessionWithProfile = AlertSession & {
   user: {
@@ -29,6 +33,7 @@ type DispatchAttempt = {
   priority: number;
   maskedPhone: string;
   status: DispatchStatus;
+  deliveryChannel: EmergencyDeliveryChannel;
   eventType: AlertEventType;
   provider: string;
   providerMessageId?: string;
@@ -74,6 +79,8 @@ export class EmergencyDispatchService {
     const notifiedContacts = this.getAlreadyNotifiedContacts(
       existingDispatchEvents,
     );
+    const deliveryChannels =
+      this.messagingProvider.getEmergencyDispatchChannels();
 
     if (contacts.length === 0) {
       const alreadyRecordedNoContactFailure =
@@ -109,29 +116,34 @@ export class EmergencyDispatchService {
       alertSessionId,
       session,
     );
-    const attempts = await Promise.all(
-      contacts.map(async (contact) => {
-        const previousNotification = notifiedContacts.get(contact.id);
+    const attempts = (
+      await Promise.all(
+        contacts.map(async (contact) => {
+          const previousNotification = notifiedContacts.get(contact.id);
 
-        if (previousNotification) {
-          return this.createAlreadyNotifiedAttempt(
+          if (previousNotification) {
+            return [
+              this.createAlreadyNotifiedAttempt(
+                contact,
+                previousNotification,
+                session,
+                location,
+              ),
+            ];
+          }
+
+          return this.createDispatchAttempts({
             contact,
-            previousNotification,
-            session,
+            deliveryChannels,
             location,
-          );
-        }
-
-        return this.createDispatchAttempt({
-          contact,
-          location,
-          session,
-          source: options.source ?? 'manual',
-          userId,
-          alertSessionId,
-        });
-      }),
-    );
+            session,
+            source: options.source ?? 'manual',
+            userId,
+            alertSessionId,
+          });
+        }),
+      )
+    ).flat();
 
     return {
       alreadyDispatched: attempts.every(
@@ -254,6 +266,7 @@ export class EmergencyDispatchService {
       providerMessageId:
         this.getMetadataString(metadata, 'providerMessageId') ?? undefined,
       reason: 'already_notified',
+      deliveryChannel: this.getEventDeliveryChannel(metadata),
       message:
         this.getMetadataString(metadata, 'message') ??
         this.buildEmergencyMessage(session, location),
@@ -303,42 +316,43 @@ export class EmergencyDispatchService {
     });
   }
 
-  private async createDispatchAttempt(input: {
+  private async createDispatchAttempts(input: {
     alertSessionId: string;
     contact: EmergencyContact;
+    deliveryChannels: EmergencyDeliveryChannel[];
     location: DispatchLocation | null;
     session: AlertSessionWithProfile;
     source: DispatchCriticalAlertOptions['source'];
     userId: string;
-  }): Promise<DispatchAttempt> {
+  }): Promise<DispatchAttempt[]> {
     const message = this.buildEmergencyMessage(input.session, input.location);
-    const delivery = await this.messagingProvider.sendSms({
-      to: input.contact.phone,
-      body: message,
-    });
-    const status: DispatchStatus = delivery.status;
+    const deliveries = await Promise.all(
+      input.deliveryChannels.map((channel) =>
+        this.messagingProvider.sendMessage({
+          body: message,
+          channel,
+          to: input.contact.phone,
+        }),
+      ),
+    );
+    const attempts = deliveries.map((delivery) =>
+      this.toDispatchAttempt(input.contact, delivery, message),
+    );
+    const hasSentDelivery = attempts.some(
+      (attempt) => attempt.status === 'sent',
+    );
+    const status: DispatchStatus = hasSentDelivery ? 'sent' : 'failed';
     const eventType =
       status === 'sent'
         ? AlertEventType.CONTACT_NOTIFIED
         : AlertEventType.CONTACT_NOTIFICATION_FAILED;
-    const metadata: Record<string, string | number> = {
-      contactId: input.contact.id,
-      contactPriority: input.contact.priority,
-      dispatchKind: 'critical_alert_contacts',
-      dispatchSource: input.source ?? 'manual',
-      deliveryChannel: 'sms',
-      provider: delivery.provider,
-      status,
+    const metadata = this.buildDispatchMetadata({
+      attempts,
+      contact: input.contact,
       message,
-    };
-
-    if (delivery.providerMessageId) {
-      metadata.providerMessageId = delivery.providerMessageId;
-    }
-
-    if (delivery.failureReason) {
-      metadata.reason = delivery.failureReason;
-    }
+      source: input.source,
+      status,
+    });
 
     await this.prisma.alertEvent.create({
       data: {
@@ -353,18 +367,87 @@ export class EmergencyDispatchService {
       },
     });
 
-    return {
+    return attempts;
+  }
+
+  private buildDispatchMetadata(input: {
+    attempts: DispatchAttempt[];
+    contact: EmergencyContact;
+    message: string;
+    source: DispatchCriticalAlertOptions['source'];
+    status: DispatchStatus;
+  }): Record<string, string | number> {
+    const firstSentAttempt =
+      input.attempts.find((attempt) => attempt.status === 'sent') ??
+      input.attempts[0];
+    const metadata: Record<string, string | number> = {
       contactId: input.contact.id,
-      contactName: input.contact.name,
-      priority: input.contact.priority,
-      maskedPhone: this.maskPhone(input.contact.phone),
-      status,
-      eventType,
+      contactPriority: input.contact.priority,
+      dispatchKind: 'critical_alert_contacts',
+      dispatchSource: input.source ?? 'manual',
+      deliveryChannel:
+        input.attempts.length === 1
+          ? input.attempts[0].deliveryChannel
+          : 'multi',
+      deliveryChannels: input.attempts
+        .map((attempt) => attempt.deliveryChannel)
+        .join(','),
+      provider: firstSentAttempt?.provider ?? 'unconfigured',
+      status: input.status,
+      message: input.message,
+    };
+
+    if (firstSentAttempt?.providerMessageId) {
+      metadata.providerMessageId = firstSentAttempt.providerMessageId;
+    }
+
+    if (firstSentAttempt?.reason && input.status === 'failed') {
+      metadata.reason = firstSentAttempt.reason;
+    }
+
+    input.attempts.forEach((attempt) => {
+      const suffix = this.toMetadataChannelSuffix(attempt.deliveryChannel);
+
+      metadata[`deliveryStatus${suffix}`] = attempt.status;
+      metadata[`provider${suffix}`] = attempt.provider;
+
+      if (attempt.providerMessageId) {
+        metadata[`providerMessageId${suffix}`] = attempt.providerMessageId;
+      }
+
+      if (attempt.reason) {
+        metadata[`reason${suffix}`] = attempt.reason;
+      }
+    });
+
+    return metadata;
+  }
+
+  private toDispatchAttempt(
+    contact: EmergencyContact,
+    delivery: SendMessageResult,
+    message: string,
+  ): DispatchAttempt {
+    return {
+      contactId: contact.id,
+      contactName: contact.name,
+      deliveryChannel: delivery.channel,
+      priority: contact.priority,
+      maskedPhone: this.maskPhone(contact.phone),
+      status: delivery.status,
+      eventType:
+        delivery.status === 'sent'
+          ? AlertEventType.CONTACT_NOTIFIED
+          : AlertEventType.CONTACT_NOTIFICATION_FAILED,
       provider: delivery.provider,
       providerMessageId: delivery.providerMessageId,
       reason: delivery.failureReason,
       message,
     };
+  }
+
+  private toMetadataChannelSuffix(channel: EmergencyDeliveryChannel) {
+    return channel === 'sms' ? 'Sms' : 'Whatsapp';
   }
 
   private buildEmergencyMessage(
@@ -403,6 +486,14 @@ export class EmergencyDispatchService {
     const value = metadata[key];
 
     return typeof value === 'string' ? value : null;
+  }
+
+  private getEventDeliveryChannel(
+    metadata: Record<string, unknown>,
+  ): EmergencyDeliveryChannel {
+    return this.getMetadataString(metadata, 'deliveryChannel') === 'whatsapp'
+      ? 'whatsapp'
+      : 'sms';
   }
 
   private maskPhone(phone: string): string {
