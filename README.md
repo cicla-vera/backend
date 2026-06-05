@@ -117,9 +117,11 @@ O manifesto calcula um `manifestHash` SHA-256 sobre os campos tecnicos antes de 
 
 Essa camada fornece integridade tecnica e rastreabilidade, mas nao garante sozinha validade juridica. A admissibilidade depende de consentimento, cadeia operacional de custodia, politicas de acesso, revisao pericial e aceitacao pela autoridade competente.
 
-## SMS de emergência
+## Mensagens de emergência
 
-O envio de SMS usa `EMERGENCY_SMS_PROVIDER=mock` por padrão em desenvolvimento/testes, sem chamada externa. Para envio real, configure `EMERGENCY_SMS_PROVIDER=twilio`, `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN` e `TWILIO_FROM_PHONE_NUMBER`; tokens nunca devem aparecer em logs, respostas ou commits.
+O envio usa `EMERGENCY_DISPATCH_CHANNELS=sms` por padrão. Para enviar por SMS e WhatsApp no mesmo acionamento, use `EMERGENCY_DISPATCH_CHANNELS=sms,whatsapp`. SMS usa `EMERGENCY_SMS_PROVIDER=mock` por padrão em desenvolvimento/testes, sem chamada externa. Para envio real por SMS, configure `EMERGENCY_SMS_PROVIDER=twilio`, `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN` e `TWILIO_FROM_PHONE_NUMBER`.
+
+Para WhatsApp via Twilio, configure `EMERGENCY_WHATSAPP_PROVIDER=twilio` e `TWILIO_WHATSAPP_FROM_PHONE_NUMBER`. O backend usa o mesmo endpoint de mensagens da Twilio com endereços `whatsapp:+...`. Em sandbox, o contato precisa ter entrado no sandbox; em produção, regras de janela/template do WhatsApp podem exigir templates aprovados para conversas iniciadas pelo app. Tokens nunca devem aparecer em logs, respostas ou commits.
 
 Quando uma sessão Vera entra em `CRITICAL`, o backend dispara automaticamente os contatos ativos com uma mensagem segura em português, orientação para acionar polícia/emergência local e localização aproximada quando disponível. O dispatch é idempotente por contato: contatos já notificados não recebem duplicatas em novas tentativas, e nenhum áudio, transcrição, foto, vídeo ou arquivo bruto é enviado para terceiros.
 

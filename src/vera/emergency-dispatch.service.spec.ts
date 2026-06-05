@@ -12,8 +12,10 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import { EmergencyDispatchService } from './emergency-dispatch.service';
 import {
+  type EmergencyDeliveryChannel,
   MessagingProviderService,
-  type SendSmsResult,
+  type SendMessageInput,
+  type SendMessageResult,
 } from './messaging-provider.service';
 
 type AlertSessionWithProfile = AlertSession & {
@@ -90,15 +92,14 @@ type PrismaMock = {
 };
 
 type MessagingProviderMock = {
-  sendSms: jest.Mock<
-    ReturnType<MessagingProviderService['sendSms']>,
-    Parameters<MessagingProviderService['sendSms']>
-  >;
+  getEmergencyDispatchChannels: jest.Mock<EmergencyDeliveryChannel[], []>;
+  sendMessage: jest.Mock<Promise<SendMessageResult>, [SendMessageInput]>;
 };
 
 const failedDelivery = (
-  overrides: Partial<SendSmsResult> = {},
-): SendSmsResult => ({
+  overrides: Partial<SendMessageResult> = {},
+): SendMessageResult => ({
+  channel: 'sms',
   provider: 'unconfigured',
   status: 'failed',
   failureReason: 'sms_provider_not_configured',
@@ -106,8 +107,9 @@ const failedDelivery = (
 });
 
 const sentDelivery = (
-  overrides: Partial<SendSmsResult> = {},
-): SendSmsResult => ({
+  overrides: Partial<SendMessageResult> = {},
+): SendMessageResult => ({
+  channel: 'sms',
   provider: 'mock',
   status: 'sent',
   providerMessageId: 'mock-message-id',
@@ -205,15 +207,14 @@ describe('EmergencyDispatchService', () => {
       },
     };
     messagingProvider = {
-      sendSms: jest.fn<
-        ReturnType<MessagingProviderService['sendSms']>,
-        Parameters<MessagingProviderService['sendSms']>
-      >(),
+      getEmergencyDispatchChannels: jest.fn<EmergencyDeliveryChannel[], []>(),
+      sendMessage: jest.fn<Promise<SendMessageResult>, [SendMessageInput]>(),
     };
     prisma.alertEvent.findMany.mockResolvedValue([]);
     prisma.alertEvent.findFirst.mockResolvedValue(null);
     prisma.alertEvent.create.mockResolvedValue(baseEvent());
-    messagingProvider.sendSms.mockResolvedValue(failedDelivery());
+    messagingProvider.getEmergencyDispatchChannels.mockReturnValue(['sms']);
+    messagingProvider.sendMessage.mockResolvedValue(failedDelivery());
     service = new EmergencyDispatchService(
       prisma as unknown as PrismaService,
       messagingProvider as unknown as MessagingProviderService,
@@ -243,9 +244,10 @@ describe('EmergencyDispatchService', () => {
       where: { userId: 'user-id', enabled: true },
       orderBy: [{ priority: 'asc' }, { createdAt: 'asc' }],
     });
-    expect(messagingProvider.sendSms).toHaveBeenNthCalledWith(1, {
-      to: '+5585999999999',
+    expect(messagingProvider.sendMessage).toHaveBeenNthCalledWith(1, {
       body: emergencyMessage,
+      channel: 'sms',
+      to: '+5585999999999',
     });
     expect(prisma.alertEvent.create).toHaveBeenCalledTimes(2);
     expect(prisma.alertEvent.create).toHaveBeenNthCalledWith(1, {
@@ -260,8 +262,12 @@ describe('EmergencyDispatchService', () => {
           dispatchKind: 'critical_alert_contacts',
           dispatchSource: 'manual',
           deliveryChannel: 'sms',
+          deliveryChannels: 'sms',
+          deliveryStatusSms: 'failed',
           provider: 'unconfigured',
+          providerSms: 'unconfigured',
           reason: 'sms_provider_not_configured',
+          reasonSms: 'sms_provider_not_configured',
           status: 'failed',
           message: emergencyMessage,
         },
@@ -274,6 +280,7 @@ describe('EmergencyDispatchService', () => {
       contactId: 'contact-low',
       contactName: 'Bea',
       maskedPhone: '*********9999',
+      deliveryChannel: 'sms',
       status: 'failed',
       provider: 'unconfigured',
       reason: 'sms_provider_not_configured',
@@ -283,7 +290,7 @@ describe('EmergencyDispatchService', () => {
   it('records a notified event when the SMS provider reports success', async () => {
     prisma.alertSession.findFirst.mockResolvedValue(baseSession());
     prisma.emergencyContact.findMany.mockResolvedValue([baseContact()]);
-    messagingProvider.sendSms.mockResolvedValue(sentDelivery());
+    messagingProvider.sendMessage.mockResolvedValue(sentDelivery());
 
     const result = await service.dispatchCriticalAlert('user-id', 'session-id');
 
@@ -299,8 +306,12 @@ describe('EmergencyDispatchService', () => {
           dispatchKind: 'critical_alert_contacts',
           dispatchSource: 'manual',
           deliveryChannel: 'sms',
+          deliveryChannels: 'sms',
+          deliveryStatusSms: 'sent',
           provider: 'mock',
           providerMessageId: 'mock-message-id',
+          providerMessageIdSms: 'mock-message-id',
+          providerSms: 'mock',
           status: 'sent',
           message: emergencyMessage,
         },
@@ -309,11 +320,88 @@ describe('EmergencyDispatchService', () => {
     expect(result.alreadyDispatched).toBe(false);
     expect(result.providerConfigured).toBe(true);
     expect(result.attempts[0]).toMatchObject({
+      deliveryChannel: 'sms',
       eventType: AlertEventType.CONTACT_NOTIFIED,
       provider: 'mock',
       providerMessageId: 'mock-message-id',
       status: 'sent',
     });
+  });
+
+  it('dispatches configured SMS and WhatsApp channels as one contact notification', async () => {
+    prisma.alertSession.findFirst.mockResolvedValue(baseSession());
+    prisma.emergencyContact.findMany.mockResolvedValue([baseContact()]);
+    messagingProvider.getEmergencyDispatchChannels.mockReturnValue([
+      'sms',
+      'whatsapp',
+    ]);
+    messagingProvider.sendMessage.mockImplementation((input) =>
+      Promise.resolve(
+        input.channel === 'sms'
+          ? sentDelivery({
+              channel: 'sms',
+              provider: 'mock',
+              providerMessageId: 'sms-message-id',
+            })
+          : failedDelivery({
+              channel: 'whatsapp',
+              provider: 'twilio',
+              failureReason: 'twilio_http_400',
+            }),
+      ),
+    );
+
+    const result = await service.dispatchCriticalAlert('user-id', 'session-id');
+
+    expect(messagingProvider.sendMessage).toHaveBeenNthCalledWith(1, {
+      body: emergencyMessage,
+      channel: 'sms',
+      to: '+5585999999999',
+    });
+    expect(messagingProvider.sendMessage).toHaveBeenNthCalledWith(2, {
+      body: emergencyMessage,
+      channel: 'whatsapp',
+      to: '+5585999999999',
+    });
+    expect(prisma.alertEvent.create).toHaveBeenCalledWith({
+      data: {
+        userId: 'user-id',
+        alertSessionId: 'session-id',
+        type: AlertEventType.CONTACT_NOTIFIED,
+        message: 'Emergency contact notification prepared.',
+        metadata: {
+          contactId: 'contact-id',
+          contactPriority: 0,
+          deliveryChannel: 'multi',
+          deliveryChannels: 'sms,whatsapp',
+          deliveryStatusSms: 'sent',
+          deliveryStatusWhatsapp: 'failed',
+          dispatchKind: 'critical_alert_contacts',
+          dispatchSource: 'manual',
+          message: emergencyMessage,
+          provider: 'mock',
+          providerMessageId: 'sms-message-id',
+          providerMessageIdSms: 'sms-message-id',
+          providerSms: 'mock',
+          providerWhatsapp: 'twilio',
+          reasonWhatsapp: 'twilio_http_400',
+          status: 'sent',
+        },
+      },
+    });
+    expect(result.providerConfigured).toBe(true);
+    expect(result.attempts).toHaveLength(2);
+    expect(result.attempts).toEqual([
+      expect.objectContaining({
+        deliveryChannel: 'sms',
+        status: 'sent',
+      }),
+      expect.objectContaining({
+        deliveryChannel: 'whatsapp',
+        reason: 'twilio_http_400',
+        status: 'failed',
+      }),
+    ]);
   });
 
   it('records a failed event when there are no active contacts', async () => {
@@ -357,12 +445,13 @@ describe('EmergencyDispatchService', () => {
 
     const result = await service.dispatchCriticalAlert('user-id', 'session-id');
 
-    expect(messagingProvider.sendSms).not.toHaveBeenCalled();
+    expect(messagingProvider.sendMessage).not.toHaveBeenCalled();
     expect(prisma.alertEvent.create).not.toHaveBeenCalled();
     expect(result.alreadyDispatched).toBe(true);
     expect(result.attempts).toEqual([
       expect.objectContaining({
         contactId: 'contact-id',
+        deliveryChannel: 'sms',
         eventType: AlertEventType.CONTACT_NOTIFIED,
         provider: 'mock',
         providerMessageId: 'mock-message-id',
@@ -381,15 +470,16 @@ describe('EmergencyDispatchService', () => {
         longitude: -38.51,
       }),
     );
-    messagingProvider.sendSms.mockResolvedValue(sentDelivery());
+    messagingProvider.sendMessage.mockResolvedValue(sentDelivery());
 
     await service.dispatchCriticalAlert('user-id', 'session-id', {
       source: 'ai_escalation',
     });
 
-    expect(messagingProvider.sendSms).toHaveBeenCalledWith({
-      to: '+5585999999999',
+    expect(messagingProvider.sendMessage).toHaveBeenCalledWith({
       body: 'Alerta Vera: Ana pode estar em perigo agora. Local aproximado: -3.720, -38.510. Tente contato imediatamente e acione a policia ou emergencia local se nao conseguir confirmar que ela esta segura.',
+      channel: 'sms',
+      to: '+5585999999999',
     });
     expect(prisma.alertEvent.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
