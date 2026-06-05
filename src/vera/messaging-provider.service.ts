@@ -3,10 +3,15 @@ import { randomUUID } from 'node:crypto';
 
 type SmsProviderName = 'mock' | 'twilio' | 'unconfigured';
 type SmsDeliveryStatus = 'sent' | 'failed';
+export type EmergencyDeliveryChannel = 'sms' | 'whatsapp';
 
 export type SendSmsInput = {
   to: string;
   body: string;
+};
+
+export type SendMessageInput = SendSmsInput & {
+  channel: EmergencyDeliveryChannel;
 };
 
 export type SendSmsResult = {
@@ -14,6 +19,10 @@ export type SendSmsResult = {
   status: SmsDeliveryStatus;
   providerMessageId?: string;
   failureReason?: string;
+};
+
+export type SendMessageResult = SendSmsResult & {
+  channel: EmergencyDeliveryChannel;
 };
 
 type TwilioConfig = {
@@ -27,19 +36,37 @@ type TwilioMessageResponse = {
 };
 
 const SMS_PROVIDER_ENV = 'EMERGENCY_SMS_PROVIDER';
+const WHATSAPP_PROVIDER_ENV = 'EMERGENCY_WHATSAPP_PROVIDER';
+const DISPATCH_CHANNELS_ENV = 'EMERGENCY_DISPATCH_CHANNELS';
 const TWILIO_PROVIDER = 'twilio';
 const MOCK_PROVIDER = 'mock';
+const DEFAULT_DISPATCH_CHANNELS: EmergencyDeliveryChannel[] = ['sms'];
 
 @Injectable()
 export class MessagingProviderService {
   async sendSms(input: SendSmsInput): Promise<SendSmsResult> {
-    const provider = this.resolveProvider();
+    const result = await this.sendMessage({
+      ...input,
+      channel: 'sms',
+    });
+
+    return {
+      failureReason: result.failureReason,
+      provider: result.provider,
+      providerMessageId: result.providerMessageId,
+      status: result.status,
+    };
+  }
+
+  async sendMessage(input: SendMessageInput): Promise<SendMessageResult> {
+    const provider = this.resolveProvider(input.channel);
 
     if (provider === MOCK_PROVIDER) {
       return {
+        channel: input.channel,
         provider,
         status: 'sent',
-        providerMessageId: `mock-${randomUUID()}`,
+        providerMessageId: `mock-${input.channel}-${randomUUID()}`,
       };
     }
 
@@ -48,20 +75,44 @@ export class MessagingProviderService {
     }
 
     return {
+      channel: input.channel,
       provider,
       status: 'failed',
-      failureReason: 'sms_provider_not_configured',
+      failureReason: `${input.channel}_provider_not_configured`,
     };
   }
 
-  private async sendWithTwilio(input: SendSmsInput): Promise<SendSmsResult> {
-    const config = this.getTwilioConfig();
+  getEmergencyDispatchChannels(): EmergencyDeliveryChannel[] {
+    const configuredChannels = process.env[DISPATCH_CHANNELS_ENV]?.split(',')
+      .map((channel) => channel.trim().toLowerCase())
+      .filter(Boolean);
+    const channels = configuredChannels?.length
+      ? configuredChannels
+      : DEFAULT_DISPATCH_CHANNELS;
+    const normalizedChannels = channels.filter(
+      (channel): channel is EmergencyDeliveryChannel =>
+        channel === 'sms' || channel === 'whatsapp',
+    );
+
+    return normalizedChannels.length
+      ? [...new Set(normalizedChannels)]
+      : DEFAULT_DISPATCH_CHANNELS;
+  }
+
+  private async sendWithTwilio(
+    input: SendMessageInput,
+  ): Promise<SendMessageResult> {
+    const config = this.getTwilioConfig(input.channel);
 
     if (!config) {
       return {
+        channel: input.channel,
         provider: TWILIO_PROVIDER,
         status: 'failed',
-        failureReason: 'twilio_not_configured',
+        failureReason:
+          input.channel === 'sms'
+            ? 'twilio_not_configured'
+            : 'twilio_whatsapp_not_configured',
       };
     }
 
@@ -76,8 +127,8 @@ export class MessagingProviderService {
           'Content-Type': 'application/x-www-form-urlencoded',
         },
         body: new URLSearchParams({
-          To: input.to,
-          From: config.fromPhoneNumber,
+          To: this.formatTwilioAddress(input.channel, input.to),
+          From: this.formatTwilioAddress(input.channel, config.fromPhoneNumber),
           Body: input.body,
         }),
       },
@@ -85,6 +136,7 @@ export class MessagingProviderService {
 
     if (!response.ok) {
       return {
+        channel: input.channel,
         provider: TWILIO_PROVIDER,
         status: 'failed',
         failureReason: `twilio_http_${response.status}`,
@@ -94,14 +146,18 @@ export class MessagingProviderService {
     const responseBody = await this.parseTwilioResponse(response);
 
     return {
+      channel: input.channel,
       provider: TWILIO_PROVIDER,
       status: 'sent',
       providerMessageId: responseBody.sid,
     };
   }
 
-  private resolveProvider(): SmsProviderName {
-    const configuredProvider = process.env[SMS_PROVIDER_ENV]?.toLowerCase();
+  private resolveProvider(channel: EmergencyDeliveryChannel): SmsProviderName {
+    const configuredProvider =
+      process.env[
+        channel === 'sms' ? SMS_PROVIDER_ENV : WHATSAPP_PROVIDER_ENV
+      ]?.toLowerCase();
 
     if (configuredProvider === MOCK_PROVIDER) {
       return MOCK_PROVIDER;
@@ -111,7 +167,7 @@ export class MessagingProviderService {
       return TWILIO_PROVIDER;
     }
 
-    if (this.getTwilioConfig()) {
+    if (this.getTwilioConfig(channel)) {
       return TWILIO_PROVIDER;
     }
 
@@ -122,16 +178,34 @@ export class MessagingProviderService {
     return MOCK_PROVIDER;
   }
 
-  private getTwilioConfig(): TwilioConfig | null {
+  private getTwilioConfig(
+    channel: EmergencyDeliveryChannel,
+  ): TwilioConfig | null {
     const accountSid = process.env.TWILIO_ACCOUNT_SID;
     const authToken = process.env.TWILIO_AUTH_TOKEN;
-    const fromPhoneNumber = process.env.TWILIO_FROM_PHONE_NUMBER;
+    const fromPhoneNumber =
+      channel === 'sms'
+        ? process.env.TWILIO_FROM_PHONE_NUMBER
+        : process.env.TWILIO_WHATSAPP_FROM_PHONE_NUMBER;
 
     if (!accountSid || !authToken || !fromPhoneNumber) {
       return null;
     }
 
     return { accountSid, authToken, fromPhoneNumber };
+  }
+
+  private formatTwilioAddress(
+    channel: EmergencyDeliveryChannel,
+    phoneNumber: string,
+  ) {
+    if (channel !== 'whatsapp') {
+      return phoneNumber;
+    }
+
+    return phoneNumber.startsWith('whatsapp:')
+      ? phoneNumber
+      : `whatsapp:${phoneNumber}`;
   }
 
   private async parseTwilioResponse(

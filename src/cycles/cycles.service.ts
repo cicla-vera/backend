@@ -14,6 +14,12 @@ type CycleStart = {
   startDate: Date;
 };
 
+type CyclePeriod = {
+  id: string;
+  startDate: Date;
+  endDate: Date | null;
+};
+
 type SymptomEntryWithSymptom = {
   date: Date;
   intensity: number | null;
@@ -38,21 +44,20 @@ export class CyclesService {
   constructor(private prisma: PrismaService) {}
 
   async create(userId: string, dto: CreateCycleDto) {
-    const startDate = new Date(dto.startDate);
-    const endDate = dto.endDate ? new Date(dto.endDate) : null;
+    const startDate = this.parseDate(dto.startDate, 'startDate');
+    const endDate = dto.endDate ? this.parseDate(dto.endDate, 'endDate') : null;
 
-    const duration = endDate
-      ? Math.round(
-          (endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24),
-        )
-      : null;
+    this.assertValidPeriod(startDate, endDate);
+    await this.assertNoOverlappingCycle(userId, startDate, endDate);
 
     return this.prisma.cycleLog.create({
       data: {
         userId,
         startDate,
         endDate,
-        duration,
+        duration: endDate
+          ? this.calculateDayDifference(startDate, endDate)
+          : null,
       },
     });
   }
@@ -77,21 +82,30 @@ export class CyclesService {
   }
 
   async update(userId: string, id: string, dto: UpdateCycleDto) {
-    await this.findOne(userId, id);
+    const currentCycle = await this.findOne(userId, id);
+    const startDate =
+      dto.startDate !== undefined
+        ? this.parseDate(dto.startDate, 'startDate')
+        : currentCycle.startDate;
+    const endDate =
+      dto.endDate !== undefined
+        ? dto.endDate === null
+          ? null
+          : this.parseDate(dto.endDate, 'endDate')
+        : currentCycle.endDate;
 
-    const startDate = dto.startDate ? new Date(dto.startDate) : undefined;
-    const endDate = dto.endDate ? new Date(dto.endDate) : undefined;
-
-    let duration: number | undefined;
-    if (startDate && endDate) {
-      duration = Math.round(
-        (endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24),
-      );
-    }
+    this.assertValidPeriod(startDate, endDate);
+    await this.assertNoOverlappingCycle(userId, startDate, endDate, id);
 
     return this.prisma.cycleLog.update({
       where: { id },
-      data: { startDate, endDate, duration },
+      data: {
+        startDate,
+        endDate,
+        duration: endDate
+          ? this.calculateDayDifference(startDate, endDate)
+          : null,
+      },
     });
   }
 
@@ -441,8 +455,81 @@ export class CyclesService {
     };
   }
 
+  private parseDate(value: string, fieldName: 'startDate' | 'endDate') {
+    const date = new Date(value);
+
+    if (Number.isNaN(date.getTime())) {
+      throw new BadRequestException(`${fieldName} must be a valid date.`);
+    }
+
+    return date;
+  }
+
+  private assertValidPeriod(startDate: Date, endDate: Date | null) {
+    if (
+      endDate &&
+      this.getUtcDayTimestamp(endDate) < this.getUtcDayTimestamp(startDate)
+    ) {
+      throw new BadRequestException(
+        'Cycle end date cannot be before start date.',
+      );
+    }
+  }
+
+  private async assertNoOverlappingCycle(
+    userId: string,
+    startDate: Date,
+    endDate: Date | null,
+    excludedCycleId?: string,
+  ) {
+    const existingCycles = await this.prisma.cycleLog.findMany({
+      where: {
+        userId,
+        ...(excludedCycleId ? { id: { not: excludedCycleId } } : {}),
+      },
+      select: { id: true, startDate: true, endDate: true },
+    });
+
+    const overlappingCycle = existingCycles.find((cycle: CyclePeriod) =>
+      this.periodsOverlap(startDate, endDate, cycle.startDate, cycle.endDate),
+    );
+
+    if (overlappingCycle) {
+      throw new BadRequestException('Cycle period overlaps an existing cycle.');
+    }
+  }
+
+  private periodsOverlap(
+    leftStartDate: Date,
+    leftEndDate: Date | null,
+    rightStartDate: Date,
+    rightEndDate: Date | null,
+  ) {
+    const leftStart = this.getUtcDayTimestamp(leftStartDate);
+    const leftEnd = leftEndDate
+      ? this.getUtcDayTimestamp(leftEndDate)
+      : Number.POSITIVE_INFINITY;
+    const rightStart = this.getUtcDayTimestamp(rightStartDate);
+    const rightEnd = rightEndDate
+      ? this.getUtcDayTimestamp(rightEndDate)
+      : Number.POSITIVE_INFINITY;
+
+    return leftStart <= rightEnd && rightStart <= leftEnd;
+  }
+
   private calculateDayDifference(startDate: Date, endDate: Date) {
-    return Math.round((endDate.getTime() - startDate.getTime()) / DAY_IN_MS);
+    return (
+      (this.getUtcDayTimestamp(endDate) - this.getUtcDayTimestamp(startDate)) /
+      DAY_IN_MS
+    );
+  }
+
+  private getUtcDayTimestamp(date: Date) {
+    return Date.UTC(
+      date.getUTCFullYear(),
+      date.getUTCMonth(),
+      date.getUTCDate(),
+    );
   }
 
   private getPeriodDuration(

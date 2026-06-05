@@ -7,6 +7,7 @@ import {
   AlertEventType,
   AlertStatus,
   EvidenceAuditAction,
+  EvidenceChunkChainStatus,
   type EvidenceAuditEvent,
   EvidenceType,
   type AlertSession,
@@ -24,6 +25,14 @@ export const MAX_EVIDENCE_UPLOAD_BYTES = 25 * 1024 * 1024;
 type EvidenceMetadataValue = string | number | boolean | null;
 type EvidenceMetadataPayload = Record<string, EvidenceMetadataValue>;
 type EvidenceAuditMetadataPayload = Record<string, EvidenceMetadataValue>;
+
+type EvidenceUploadContract = {
+  clientUploadId: string | null;
+  chunkSequenceId: string | null;
+  chunkIndex: number | null;
+  previousChunkHash: string | null;
+  chunkChainStatus: EvidenceChunkChainStatus;
+};
 
 export type UploadedEvidenceFile = {
   buffer: Buffer;
@@ -43,6 +52,11 @@ type EvidenceRecordResponse = {
   contentHash: string;
   hashAlgorithm: string;
   hashedAt: Date;
+  clientUploadId: string | null;
+  chunkSequenceId: string | null;
+  chunkIndex: number | null;
+  previousChunkHash: string | null;
+  chunkChainStatus: EvidenceChunkChainStatus;
   hiddenFromUserAt: Date | null;
   retentionUntil: Date | null;
   deletedAt: Date | null;
@@ -67,12 +81,13 @@ type CreateAuditEventInput = {
   metadata?: EvidenceAuditMetadataPayload;
 };
 
-const MAX_METADATA_KEYS = 20;
+const MAX_METADATA_KEYS = 32;
 const MAX_METADATA_KEY_LENGTH = 40;
 const MAX_METADATA_STRING_LENGTH = 240;
 const MAX_ORIGINAL_NAME_LENGTH = 240;
 const HASH_ALGORITHM = 'SHA-256';
 const NODE_HASH_ALGORITHM = 'sha256';
+const SHA_256_PATTERN = /^[a-f0-9]{64}$/i;
 export const EVIDENCE_RETENTION_DAYS = 180;
 
 const FILE_MIME_TYPES = new Set([
@@ -99,6 +114,32 @@ export class EvidenceService {
     this.validateFile(file);
     this.validateMimeType(dto.type, file.mimetype);
 
+    const metadata = this.parseMetadata(dto.metadata);
+    const contentHash = this.calculateContentHash(file.buffer);
+    const uploadContract = this.parseUploadContract(
+      dto.type,
+      metadata,
+      contentHash,
+    );
+    const existingRecord = await this.findExistingUpload(
+      userId,
+      alertSessionId,
+      uploadContract,
+    );
+
+    if (existingRecord) {
+      this.assertMatchingIdempotentUpload(
+        existingRecord,
+        alertSessionId,
+        dto.type,
+        file.mimetype,
+        contentHash,
+        uploadContract,
+      );
+
+      return this.toResponse(existingRecord);
+    }
+
     const session = await this.findOwnedSession(userId, alertSessionId);
 
     if (session.status !== AlertStatus.ACTIVE) {
@@ -107,8 +148,11 @@ export class EvidenceService {
       );
     }
 
-    const metadata = this.parseMetadata(dto.metadata);
-    const contentHash = this.calculateContentHash(file.buffer);
+    uploadContract.chunkChainStatus = await this.resolveChunkChainStatus(
+      userId,
+      alertSessionId,
+      uploadContract,
+    );
     const hashedAt = new Date();
     const upload = await this.evidenceStorage.uploadEvidence({
       userId,
@@ -118,55 +162,99 @@ export class EvidenceService {
       body: file.buffer,
     });
 
-    const record = await this.prisma.$transaction(async (tx) => {
-      const evidenceRecord = await tx.evidenceRecord.create({
-        data: {
-          userId,
-          alertSessionId,
-          type: dto.type,
-          size: file.size,
-          mimeType: file.mimetype,
-          originalName: this.normalizeOriginalName(file.originalname),
-          storagePath: upload.path,
-          contentHash,
-          hashAlgorithm: HASH_ALGORITHM,
-          hashedAt,
-          metadata,
-        },
-      });
+    let record: EvidenceRecord;
 
-      await tx.alertEvent.create({
-        data: {
+    try {
+      record = await this.prisma.$transaction(async (tx) => {
+        const evidenceRecord = await tx.evidenceRecord.create({
+          data: {
+            userId,
+            alertSessionId,
+            type: dto.type,
+            size: file.size,
+            mimeType: file.mimetype,
+            originalName: this.normalizeOriginalName(file.originalname),
+            storagePath: upload.path,
+            contentHash,
+            hashAlgorithm: HASH_ALGORITHM,
+            hashedAt,
+            clientUploadId: uploadContract.clientUploadId,
+            chunkSequenceId: uploadContract.chunkSequenceId,
+            chunkIndex: uploadContract.chunkIndex,
+            previousChunkHash: uploadContract.previousChunkHash,
+            chunkChainStatus: uploadContract.chunkChainStatus,
+            metadata,
+          },
+        });
+
+        await tx.alertEvent.create({
+          data: {
+            userId,
+            alertSessionId,
+            type: AlertEventType.EVIDENCE_UPLOADED,
+            message: 'Evidence uploaded.',
+            metadata: {
+              evidenceRecordId: evidenceRecord.id,
+              evidenceType: evidenceRecord.type,
+              mimeType: evidenceRecord.mimeType,
+              size: evidenceRecord.size,
+              contentHash: evidenceRecord.contentHash,
+              hashAlgorithm: evidenceRecord.hashAlgorithm,
+              clientUploadId: evidenceRecord.clientUploadId,
+              chunkSequenceId: evidenceRecord.chunkSequenceId,
+              chunkIndex: evidenceRecord.chunkIndex,
+              chunkChainStatus: evidenceRecord.chunkChainStatus,
+            },
+          },
+        });
+
+        await this.createAuditEvent(tx, {
           userId,
-          alertSessionId,
-          type: AlertEventType.EVIDENCE_UPLOADED,
-          message: 'Evidence uploaded.',
+          evidenceRecordId: evidenceRecord.id,
+          action: EvidenceAuditAction.UPLOADED,
+          contentHash: evidenceRecord.contentHash,
           metadata: {
-            evidenceRecordId: evidenceRecord.id,
+            alertSessionId,
             evidenceType: evidenceRecord.type,
             mimeType: evidenceRecord.mimeType,
             size: evidenceRecord.size,
-            contentHash: evidenceRecord.contentHash,
-            hashAlgorithm: evidenceRecord.hashAlgorithm,
+            clientUploadId: evidenceRecord.clientUploadId,
+            chunkSequenceId: evidenceRecord.chunkSequenceId,
+            chunkIndex: evidenceRecord.chunkIndex,
+            previousChunkHash: evidenceRecord.previousChunkHash,
+            chunkChainStatus: evidenceRecord.chunkChainStatus,
           },
-        },
-      });
+        });
 
-      await this.createAuditEvent(tx, {
+        await this.reconcilePendingChild(tx, evidenceRecord);
+
+        return evidenceRecord;
+      });
+    } catch (error) {
+      if (!this.isUniqueConstraintError(error)) {
+        throw error;
+      }
+
+      const concurrentRecord = await this.findExistingUpload(
         userId,
-        evidenceRecordId: evidenceRecord.id,
-        action: EvidenceAuditAction.UPLOADED,
-        contentHash: evidenceRecord.contentHash,
-        metadata: {
-          alertSessionId,
-          evidenceType: evidenceRecord.type,
-          mimeType: evidenceRecord.mimeType,
-          size: evidenceRecord.size,
-        },
-      });
+        alertSessionId,
+        uploadContract,
+      );
 
-      return evidenceRecord;
-    });
+      if (!concurrentRecord) {
+        throw error;
+      }
+
+      this.assertMatchingIdempotentUpload(
+        concurrentRecord,
+        alertSessionId,
+        dto.type,
+        file.mimetype,
+        contentHash,
+        uploadContract,
+      );
+      record = concurrentRecord;
+    }
 
     return this.toResponse(record);
   }
@@ -272,6 +360,319 @@ export class EvidenceService {
       matches,
       checkedAt,
     };
+  }
+
+  private parseUploadContract(
+    type: EvidenceType,
+    metadata: EvidenceMetadataPayload | undefined,
+    contentHash: string,
+  ): EvidenceUploadContract {
+    const clientUploadId = this.getOptionalMetadataString(
+      metadata,
+      'queuedEvidenceUploadId',
+    );
+    const chunkKeys = [
+      'audioChunkSequenceId',
+      'audioChunkIndex',
+      'audioChunkHash',
+      'audioPreviousChunkHash',
+    ];
+    const hasChunkMetadata = Boolean(
+      metadata &&
+      chunkKeys.some((key) =>
+        Object.prototype.hasOwnProperty.call(metadata, key),
+      ),
+    );
+
+    if (!hasChunkMetadata) {
+      return {
+        clientUploadId,
+        chunkSequenceId: null,
+        chunkIndex: null,
+        previousChunkHash: null,
+        chunkChainStatus: EvidenceChunkChainStatus.NOT_APPLICABLE,
+      };
+    }
+
+    if (type !== EvidenceType.AUDIO) {
+      throw new BadRequestException(
+        'Audio chunk metadata can only be used with audio evidence.',
+      );
+    }
+
+    const chunkSequenceId = this.getRequiredMetadataString(
+      metadata,
+      'audioChunkSequenceId',
+    );
+    const chunkIndex = this.getRequiredMetadataInteger(
+      metadata,
+      'audioChunkIndex',
+    );
+    const suppliedChunkHash = this.getOptionalMetadataHash(
+      metadata,
+      'audioChunkHash',
+    );
+    const previousChunkHash = this.getOptionalMetadataHash(
+      metadata,
+      'audioPreviousChunkHash',
+    );
+
+    if (suppliedChunkHash && suppliedChunkHash !== contentHash) {
+      throw new BadRequestException(
+        'Audio chunk hash does not match the uploaded file.',
+      );
+    }
+
+    if (previousChunkHash === contentHash) {
+      throw new BadRequestException(
+        'Audio chunk cannot reference its own hash as the previous chunk.',
+      );
+    }
+
+    if (metadata) {
+      metadata.audioChunkHash = contentHash;
+    }
+
+    return {
+      clientUploadId,
+      chunkSequenceId,
+      chunkIndex,
+      previousChunkHash,
+      chunkChainStatus:
+        previousChunkHash === null
+          ? EvidenceChunkChainStatus.ROOT
+          : EvidenceChunkChainStatus.PENDING_PREVIOUS,
+    };
+  }
+
+  private async findExistingUpload(
+    userId: string,
+    alertSessionId: string,
+    contract: EvidenceUploadContract,
+  ): Promise<EvidenceRecord | null> {
+    if (contract.clientUploadId) {
+      const existingByClientId = await this.prisma.evidenceRecord.findFirst({
+        where: {
+          userId,
+          clientUploadId: contract.clientUploadId,
+        },
+      });
+
+      if (existingByClientId) {
+        return existingByClientId;
+      }
+    }
+
+    if (contract.chunkSequenceId !== null && contract.chunkIndex !== null) {
+      return this.prisma.evidenceRecord.findFirst({
+        where: {
+          userId,
+          alertSessionId,
+          chunkSequenceId: contract.chunkSequenceId,
+          chunkIndex: contract.chunkIndex,
+        },
+      });
+    }
+
+    return null;
+  }
+
+  private assertMatchingIdempotentUpload(
+    record: EvidenceRecord,
+    alertSessionId: string,
+    type: EvidenceType,
+    mimeType: string,
+    contentHash: string,
+    contract: EvidenceUploadContract,
+  ): void {
+    const matches =
+      record.alertSessionId === alertSessionId &&
+      record.type === type &&
+      record.mimeType === mimeType &&
+      record.contentHash === contentHash &&
+      record.chunkSequenceId === contract.chunkSequenceId &&
+      record.chunkIndex === contract.chunkIndex &&
+      record.previousChunkHash === contract.previousChunkHash;
+
+    if (!matches) {
+      throw new BadRequestException(
+        'Evidence upload identifier was already used for different content.',
+      );
+    }
+  }
+
+  private async resolveChunkChainStatus(
+    userId: string,
+    alertSessionId: string,
+    contract: EvidenceUploadContract,
+  ): Promise<EvidenceChunkChainStatus> {
+    if (contract.chunkSequenceId === null || contract.chunkIndex === null) {
+      return EvidenceChunkChainStatus.NOT_APPLICABLE;
+    }
+
+    if (contract.previousChunkHash === null) {
+      return EvidenceChunkChainStatus.ROOT;
+    }
+
+    if (contract.chunkIndex === 0) {
+      throw new BadRequestException(
+        'Audio chunk index zero cannot reference a previous chunk.',
+      );
+    }
+
+    const previousChunk = await this.prisma.evidenceRecord.findFirst({
+      where: {
+        userId,
+        alertSessionId,
+        chunkSequenceId: contract.chunkSequenceId,
+        chunkIndex: contract.chunkIndex - 1,
+        deletedAt: null,
+      },
+    });
+
+    if (!previousChunk) {
+      return EvidenceChunkChainStatus.PENDING_PREVIOUS;
+    }
+
+    if (previousChunk.contentHash !== contract.previousChunkHash) {
+      throw new BadRequestException(
+        'Audio chunk previous hash does not match the preceding chunk.',
+      );
+    }
+
+    return EvidenceChunkChainStatus.VERIFIED;
+  }
+
+  private async reconcilePendingChild(
+    tx: Prisma.TransactionClient,
+    record: EvidenceRecord,
+  ): Promise<void> {
+    if (record.chunkSequenceId == null || record.chunkIndex == null) {
+      return;
+    }
+
+    const pendingChild = await tx.evidenceRecord.findFirst({
+      where: {
+        userId: record.userId,
+        alertSessionId: record.alertSessionId,
+        chunkSequenceId: record.chunkSequenceId,
+        chunkIndex: record.chunkIndex + 1,
+        previousChunkHash: record.contentHash,
+        chunkChainStatus: EvidenceChunkChainStatus.PENDING_PREVIOUS,
+        deletedAt: null,
+      },
+    });
+
+    if (!pendingChild) {
+      return;
+    }
+
+    const verifiedChild = await tx.evidenceRecord.update({
+      where: { id: pendingChild.id },
+      data: { chunkChainStatus: EvidenceChunkChainStatus.VERIFIED },
+    });
+
+    await this.createAuditEvent(tx, {
+      userId: verifiedChild.userId,
+      evidenceRecordId: verifiedChild.id,
+      action: EvidenceAuditAction.CHUNK_CHAIN_VERIFIED,
+      contentHash: verifiedChild.contentHash,
+      metadata: {
+        alertSessionId: verifiedChild.alertSessionId,
+        chunkSequenceId: verifiedChild.chunkSequenceId,
+        chunkIndex: verifiedChild.chunkIndex,
+        previousEvidenceRecordId: record.id,
+        previousChunkHash: record.contentHash,
+        chunkChainStatus: verifiedChild.chunkChainStatus,
+      },
+    });
+  }
+
+  private getOptionalMetadataString(
+    metadata: EvidenceMetadataPayload | undefined,
+    key: string,
+  ): string | null {
+    const value = metadata?.[key];
+
+    if (value === undefined || value === null) {
+      return null;
+    }
+
+    if (typeof value !== 'string' || value.trim().length === 0) {
+      throw new BadRequestException(
+        `Evidence metadata ${key} must be a non-empty string.`,
+      );
+    }
+
+    const normalized = value.trim();
+
+    if (metadata) {
+      metadata[key] = normalized;
+    }
+
+    return normalized;
+  }
+
+  private getRequiredMetadataString(
+    metadata: EvidenceMetadataPayload | undefined,
+    key: string,
+  ): string {
+    const value = this.getOptionalMetadataString(metadata, key);
+
+    if (!value) {
+      throw new BadRequestException(`Evidence metadata ${key} is required.`);
+    }
+
+    return value;
+  }
+
+  private getRequiredMetadataInteger(
+    metadata: EvidenceMetadataPayload | undefined,
+    key: string,
+  ): number {
+    const value = metadata?.[key];
+
+    if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
+      throw new BadRequestException(
+        `Evidence metadata ${key} must be a non-negative integer.`,
+      );
+    }
+
+    return value;
+  }
+
+  private getOptionalMetadataHash(
+    metadata: EvidenceMetadataPayload | undefined,
+    key: string,
+  ): string | null {
+    const value = metadata?.[key];
+
+    if (value === undefined || value === null) {
+      return null;
+    }
+
+    if (typeof value !== 'string' || !SHA_256_PATTERN.test(value)) {
+      throw new BadRequestException(
+        `Evidence metadata ${key} must be a SHA-256 hash.`,
+      );
+    }
+
+    const normalized = value.toLowerCase();
+
+    if (metadata) {
+      metadata[key] = normalized;
+    }
+
+    return normalized;
+  }
+
+  private isUniqueConstraintError(error: unknown): boolean {
+    return (
+      typeof error === 'object' &&
+      error !== null &&
+      'code' in error &&
+      error.code === 'P2002'
+    );
   }
 
   private async findOwnedSession(
@@ -541,6 +942,11 @@ export class EvidenceService {
       contentHash: record.contentHash,
       hashAlgorithm: record.hashAlgorithm,
       hashedAt: record.hashedAt,
+      clientUploadId: record.clientUploadId,
+      chunkSequenceId: record.chunkSequenceId,
+      chunkIndex: record.chunkIndex,
+      previousChunkHash: record.previousChunkHash,
+      chunkChainStatus: record.chunkChainStatus,
       hiddenFromUserAt: record.hiddenFromUserAt,
       retentionUntil: record.retentionUntil,
       deletedAt: record.deletedAt,
