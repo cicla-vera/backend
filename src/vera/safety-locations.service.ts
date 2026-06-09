@@ -4,6 +4,8 @@ import { PrismaService } from '../prisma/prisma.service';
 import { CreateSafetyLocationDto } from './dto/create-safety-location.dto';
 import { UpdateSafetyLocationDto } from './dto/update-safety-location.dto';
 
+const FIXED_SAFETY_LOCATION_RADIUS_METERS = 150;
+
 @Injectable()
 export class SafetyLocationsService {
   constructor(private prisma: PrismaService) {}
@@ -15,8 +17,12 @@ export class SafetyLocationsService {
         name: dto.name,
         latitude: dto.latitude,
         longitude: dto.longitude,
-        radiusMeters: dto.radiusMeters,
+        radiusMeters: FIXED_SAFETY_LOCATION_RADIUS_METERS,
         type: dto.type ?? SafetyLocationType.RISK,
+        address: dto.address,
+        formattedAddress: dto.formattedAddress,
+        placeId: dto.placeId,
+        addressSource: dto.addressSource,
       },
     });
   }
@@ -52,9 +58,16 @@ export class SafetyLocationsService {
         name: dto.name,
         latitude: dto.latitude,
         longitude: dto.longitude,
-        radiusMeters: dto.radiusMeters,
+        radiusMeters:
+          dto.radiusMeters === undefined
+            ? undefined
+            : FIXED_SAFETY_LOCATION_RADIUS_METERS,
         type: dto.type,
         enabled: dto.enabled,
+        address: dto.address,
+        formattedAddress: dto.formattedAddress,
+        placeId: dto.placeId,
+        addressSource: dto.addressSource,
       },
     });
   }

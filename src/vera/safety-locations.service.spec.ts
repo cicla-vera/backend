@@ -15,6 +15,10 @@ type SafetyLocationDelegateMock = {
           longitude: number;
           radiusMeters: number;
           type: SafetyLocationType;
+          address?: string;
+          formattedAddress?: string;
+          placeId?: string;
+          addressSource?: string;
         };
       },
     ]
@@ -54,6 +58,10 @@ const baseLocation = (
   radiusMeters: 120,
   type: SafetyLocationType.RISK,
   enabled: true,
+  address: null,
+  formattedAddress: null,
+  placeId: null,
+  addressSource: null,
   createdAt: new Date('2026-05-24T00:00:00.000Z'),
   updatedAt: new Date('2026-05-24T00:00:00.000Z'),
   ...overrides,
@@ -76,6 +84,10 @@ describe('SafetyLocationsService', () => {
               longitude: number;
               radiusMeters: number;
               type: SafetyLocationType;
+              address?: string;
+              formattedAddress?: string;
+              placeId?: string;
+              addressSource?: string;
             };
           },
         ]
@@ -115,7 +127,7 @@ describe('SafetyLocationsService', () => {
       name: 'Home',
       latitude: -3.7319,
       longitude: -38.5267,
-      radiusMeters: 120,
+      radiusMeters: 9999,
     });
 
     expect(safetyLocation.create).toHaveBeenCalledWith({
@@ -124,8 +136,12 @@ describe('SafetyLocationsService', () => {
         name: 'Home',
         latitude: -3.7319,
         longitude: -38.5267,
-        radiusMeters: 120,
+        radiusMeters: 150,
         type: SafetyLocationType.RISK,
+        address: undefined,
+        formattedAddress: undefined,
+        placeId: undefined,
+        addressSource: undefined,
       },
     });
   });

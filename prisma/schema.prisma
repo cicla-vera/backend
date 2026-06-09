@@ -16,32 +16,33 @@ model User {
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
 
-  profile                Profile?
+  profile                  Profile?
   accountVerificationCodes AccountVerificationCode[]
-  cycleLogs              CycleLog[]
-  symptomEntries         SymptomEntry[]
-  moodEntries            MoodEntry[]
-  flowEntries            FlowEntry[]
-  notes                  Note[]
-  temperatureEntries     TemperatureEntry[]
-  weightEntries          WeightEntry[]
-  waterEntries           WaterEntry[]
-  activityEntries        ActivityEntry[]
-  sleepEntries           SleepEntry[]
-  intercourseEntries     IntercourseEntry[]
-  medicationEntries      MedicationEntry[]
-  notificationSettings   NotificationSettings?
-  notificationDevices    NotificationDevice[]
-  notificationDeliveries NotificationDelivery[]
-  safetyProfile          SafetyProfile?
-  emergencyContacts      EmergencyContact[]
-  safetyLocations        SafetyLocation[]
-  alertSessions          AlertSession[]
-  alertEvents            AlertEvent[]
-  alertLocationSamples   AlertLocationSample[]
-  evidenceRecords        EvidenceRecord[]
-  evidenceAuditEvents    EvidenceAuditEvent[]
-  evidenceAnalyses       EvidenceAnalysis[]
+  cycleLogs                CycleLog[]
+  symptomEntries           SymptomEntry[]
+  moodEntries              MoodEntry[]
+  flowEntries              FlowEntry[]
+  notes                    Note[]
+  temperatureEntries       TemperatureEntry[]
+  weightEntries            WeightEntry[]
+  waterEntries             WaterEntry[]
+  activityEntries          ActivityEntry[]
+  sleepEntries             SleepEntry[]
+  intercourseEntries       IntercourseEntry[]
+  medicationEntries        MedicationEntry[]
+  notificationSettings     NotificationSettings?
+  notificationDevices      NotificationDevice[]
+  notificationDeliveries   NotificationDelivery[]
+  safetyProfile            SafetyProfile?
+  emergencyContacts        EmergencyContact[]
+  safetyLocations          SafetyLocation[]
+  alertSessions            AlertSession[]
+  alertEvents              AlertEvent[]
+  alertLocationSamples     AlertLocationSample[]
+  veraLocationSamples      VeraLocationSample[]
+  evidenceRecords          EvidenceRecord[]
+  evidenceAuditEvents      EvidenceAuditEvent[]
+  evidenceAnalyses         EvidenceAnalysis[]
 }
 
 model Profile {
@@ -405,18 +406,23 @@ model EmergencyContact {
 }
 
 model SafetyLocation {
-  id            String             @id @default(uuid())
-  userId        String
-  user          User               @relation(fields: [userId], references: [id], onDelete: Cascade)
-  name          String
-  latitude      Float
-  longitude     Float
-  radiusMeters  Int
-  type          SafetyLocationType @default(RISK)
-  enabled       Boolean            @default(true)
-  createdAt     DateTime           @default(now())
-  updatedAt     DateTime           @updatedAt
-  alertSessions AlertSession[]
+  id                  String               @id @default(uuid())
+  userId              String
+  user                User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name                String
+  latitude            Float
+  longitude           Float
+  radiusMeters        Int
+  type                SafetyLocationType   @default(RISK)
+  enabled             Boolean              @default(true)
+  address             String?
+  formattedAddress    String?
+  placeId             String?
+  addressSource       String?
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
+  alertSessions       AlertSession[]
+  veraLocationSamples VeraLocationSample[]
 
   @@index([userId, enabled])
   @@index([userId, type])
@@ -440,6 +446,7 @@ model AlertSession {
   updatedAt           DateTime              @updatedAt
   events              AlertEvent[]
   locationSamples     AlertLocationSample[]
+  veraLocationSamples VeraLocationSample[]
   evidenceRecords     EvidenceRecord[]
   evidenceAnalyses    EvidenceAnalysis[]
 
@@ -490,6 +497,36 @@ model AlertLocationSample {
   @@index([alertSessionId, capturedAt])
   @@index([evidenceRecordId])
   @@index([source])
+}
+
+model VeraLocationSample {
+  id                   String               @id @default(uuid())
+  userId               String
+  user                 User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  alertSessionId       String?
+  alertSession         AlertSession?        @relation(fields: [alertSessionId], references: [id], onDelete: SetNull)
+  safetyLocationId     String?
+  safetyLocation       SafetyLocation?      @relation(fields: [safetyLocationId], references: [id], onDelete: SetNull)
+  latitude             Float
+  longitude            Float
+  accuracyMeters       Float?
+  altitudeMeters       Float?
+  speedMetersPerSecond Float?
+  headingDegrees       Float?
+  source               LocationSampleSource @default(UNKNOWN)
+  monitoringState      String?
+  address              String?
+  formattedAddress     String?
+  placeId              String?
+  capturedAt           DateTime
+  metadata             Json?
+  createdAt            DateTime             @default(now())
+
+  @@index([userId, capturedAt])
+  @@index([alertSessionId, capturedAt])
+  @@index([safetyLocationId, capturedAt])
+  @@index([source])
+  @@index([monitoringState])
 }
 
 model EvidenceRecord {
