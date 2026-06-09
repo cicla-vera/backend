@@ -21,6 +21,7 @@ import {
   type UploadedEvidenceFile,
 } from './evidence.service';
 import { EvidenceAnalysisService } from './evidence-analysis.service';
+import { EvidenceExportService } from './evidence-export.service';
 
 @UseGuards(JwtGuard)
 @Controller('vera/alert-sessions/:alertSessionId/evidence')
@@ -28,6 +29,7 @@ export class EvidenceController {
   constructor(
     private readonly evidenceService: EvidenceService,
     private readonly evidenceAnalysisService: EvidenceAnalysisService,
+    private readonly evidenceExportService: EvidenceExportService,
   ) {}
 
   @Get()
@@ -36,6 +38,14 @@ export class EvidenceController {
     @Param('alertSessionId') alertSessionId: string,
   ) {
     return this.evidenceService.findAll(user.sub, alertSessionId);
+  }
+
+  @Get('export')
+  exportManifest(
+    @CurrentUser() user: { sub: string },
+    @Param('alertSessionId') alertSessionId: string,
+  ) {
+    return this.evidenceExportService.createManifest(user.sub, alertSessionId);
   }
 
   @Post()
