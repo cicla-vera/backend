@@ -83,6 +83,7 @@ async function resetDemoUserData(prisma: PrismaClient, userId: string) {
   await prisma.$transaction([
     prisma.evidenceAnalysis.deleteMany({ where: { userId } }),
     prisma.evidenceAuditEvent.deleteMany({ where: { userId } }),
+    prisma.veraLocationSample.deleteMany({ where: { userId } }),
     prisma.alertLocationSample.deleteMany({ where: { userId } }),
     prisma.evidenceRecord.deleteMany({ where: { userId } }),
     prisma.alertEvent.deleteMany({ where: { userId } }),
@@ -356,10 +357,14 @@ async function seedVeraSafetyHistory(
       radiusMeters: FIXED_RISK_LOCATION_RADIUS_METERS,
       type: SafetyLocationType.RISK,
       enabled: true,
+      address: 'Rua Doutor Pedro Monteiro, 108',
+      formattedAddress: 'Rua Doutor Pedro Monteiro, 108, Centro, Maceió - AL',
+      placeId: 'demo-maceio-home',
+      addressSource: 'demo',
     },
   });
 
-  await prisma.safetyLocation.create({
+  const work = await prisma.safetyLocation.create({
     data: {
       userId,
       name: 'Trabalho',
@@ -368,6 +373,10 @@ async function seedVeraSafetyHistory(
       radiusMeters: FIXED_RISK_LOCATION_RADIUS_METERS,
       type: SafetyLocationType.TRUSTED,
       enabled: true,
+      address: 'Avenida Fernandes Lima, 1513',
+      formattedAddress: 'Avenida Fernandes Lima, 1513, Farol, Maceió - AL',
+      placeId: 'demo-maceio-work',
+      addressSource: 'demo',
     },
   });
 
@@ -443,6 +452,63 @@ async function seedVeraSafetyHistory(
         accuracyMeters: 15,
         source: LocationSampleSource.FOREGROUND,
         capturedAt: daysAgo(2, 20, 10),
+      },
+    ],
+  });
+
+  await prisma.veraLocationSample.createMany({
+    data: [
+      {
+        userId,
+        safetyLocationId: work.id,
+        latitude: work.latitude,
+        longitude: work.longitude,
+        accuracyMeters: 22,
+        source: LocationSampleSource.BACKGROUND,
+        monitoringState: 'baseline',
+        address: work.address,
+        formattedAddress: work.formattedAddress,
+        placeId: work.placeId,
+        capturedAt: daysAgo(3, 9, 20),
+      },
+      {
+        userId,
+        safetyLocationId: home.id,
+        latitude: home.latitude,
+        longitude: home.longitude,
+        accuracyMeters: 18,
+        source: LocationSampleSource.BACKGROUND,
+        monitoringState: 'auto_armed_location',
+        address: home.address,
+        formattedAddress: home.formattedAddress,
+        placeId: home.placeId,
+        capturedAt: daysAgo(2, 20),
+      },
+      {
+        userId,
+        alertSessionId: session.id,
+        safetyLocationId: home.id,
+        latitude: home.latitude + 0.0002,
+        longitude: home.longitude - 0.0001,
+        accuracyMeters: 15,
+        source: LocationSampleSource.FOREGROUND,
+        monitoringState: 'active_alert',
+        address: home.address,
+        formattedAddress: home.formattedAddress,
+        placeId: home.placeId,
+        capturedAt: daysAgo(2, 20, 10),
+      },
+      {
+        userId,
+        latitude: -9.6507,
+        longitude: -35.7194,
+        accuracyMeters: 25,
+        source: LocationSampleSource.BACKGROUND,
+        monitoringState: 'baseline',
+        address: 'Rua do Imperador, 85',
+        formattedAddress: 'Rua do Imperador, 85, Centro, Maceió - AL',
+        placeId: 'demo-maceio-history',
+        capturedAt: daysAgo(1, 18, 40),
       },
     ],
   });
