@@ -7,7 +7,6 @@ import {
   SleepQuality,
 } from '@prisma/client';
 import { XMLParser } from 'fast-xml-parser';
-import { PDFParse } from 'pdf-parse';
 import { PrismaService } from '../prisma/prisma.service';
 
 type ImportCounters = {
@@ -1245,6 +1244,7 @@ export class DataImportService {
       );
     }
 
+    const { PDFParse } = await import('pdf-parse');
     const parser = new PDFParse({
       data: Buffer.from(pdfBase64, 'base64'),
     });
