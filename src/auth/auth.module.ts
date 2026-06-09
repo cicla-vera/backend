@@ -4,10 +4,22 @@ import { AuthService } from './auth.service';
 import { AuthController } from './auth.controller';
 import { JwtGuard } from './guards/jwt.guard';
 
+function getJwtSecret() {
+  const secret = process.env.JWT_SECRET?.trim();
+
+  if (!secret) {
+    throw new Error(
+      'JWT_SECRET must be set before starting the backend. Check backend/.env.',
+    );
+  }
+
+  return secret;
+}
+
 @Module({
   imports: [
     JwtModule.register({
-      secret: process.env.JWT_SECRET,
+      secret: getJwtSecret(),
       signOptions: { expiresIn: '7d' },
     }),
   ],
