@@ -24,6 +24,7 @@ export type AnalyzeEvidenceInput = {
   contentHash: string;
   storageReference?: string;
   captureContext?: AnalyzeEvidenceCaptureContext;
+  manualTranscriptionText?: string;
 };
 
 export type AnalyzeEvidenceCaptureContext = {
