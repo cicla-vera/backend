@@ -1,4 +1,27 @@
 import 'dotenv/config';
+
+// Polyfills para pdf-parse no ambiente Vercel/Node
+if (typeof global.DOMMatrix === 'undefined') {
+  (global as any).DOMMatrix = class DOMMatrix {
+    constructor() {}
+    static fromMatrix() { return new DOMMatrix(); }
+    static fromFloat32Array() { return new DOMMatrix(); }
+    static fromFloat64Array() { return new DOMMatrix(); }
+  };
+}
+
+if (typeof global.ImageData === 'undefined') {
+  (global as any).ImageData = class ImageData {
+    constructor() {}
+  };
+}
+
+if (typeof global.Path2D === 'undefined') {
+  (global as any).Path2D = class Path2D {
+    constructor() {}
+  };
+}
+
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
 import { AppModule } from '../src/app.module';
