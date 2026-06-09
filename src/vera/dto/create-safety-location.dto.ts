@@ -36,4 +36,24 @@ export class CreateSafetyLocationDto {
   @IsOptional()
   @IsEnum(SafetyLocationType)
   type?: SafetyLocationType;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(240)
+  address?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  formattedAddress?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(160)
+  placeId?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(40)
+  addressSource?: string;
 }

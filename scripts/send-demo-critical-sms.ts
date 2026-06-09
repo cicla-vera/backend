@@ -9,6 +9,7 @@ import {
   PrismaClient,
 } from '@prisma/client';
 import { EmergencyDispatchService } from '../src/vera/emergency-dispatch.service';
+import { LocationGeocodingService } from '../src/vera/location-geocoding.service';
 import { MessagingProviderService } from '../src/vera/messaging-provider.service';
 
 const DEFAULT_DEMO_EMAIL = 'vera.demo@cicla.local';
@@ -86,6 +87,7 @@ async function main() {
     const dispatcher = new EmergencyDispatchService(
       prisma as never,
       new MessagingProviderService(),
+      new LocationGeocodingService(),
     );
     const result = await dispatcher.dispatchCriticalAlert(user.id, session.id, {
       source: 'manual',

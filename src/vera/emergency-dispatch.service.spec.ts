@@ -4,13 +4,20 @@ import {
   AlertLevel,
   AlertStatus,
   AlertTrigger,
+  SafetyLocationType,
   type AlertEvent,
   type AlertSession,
   type EmergencyContact,
   type Profile,
+  type SafetyLocation,
+  type VeraLocationSample,
 } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { EmergencyDispatchService } from './emergency-dispatch.service';
+import {
+  LocationGeocodingService,
+  type GeocodingPlace,
+} from './location-geocoding.service';
 import {
   type EmergencyDeliveryChannel,
   MessagingProviderService,
@@ -22,6 +29,7 @@ type AlertSessionWithProfile = AlertSession & {
   user: {
     profile: Profile | null;
   };
+  safetyLocation: SafetyLocation | null;
 };
 
 type AlertSessionFindFirstArgs = {
@@ -32,6 +40,7 @@ type AlertSessionFindFirstArgs = {
         profile: true;
       };
     };
+    safetyLocation: true;
   };
 };
 
@@ -89,11 +98,18 @@ type PrismaMock = {
     findFirst: jest.Mock<Promise<AlertEvent | null>, [AlertEventFindFirstArgs]>;
     create: jest.Mock<Promise<AlertEvent>, [AlertEventCreateArgs]>;
   };
+  veraLocationSample: {
+    findFirst: jest.Mock<Promise<VeraLocationSample | null>, [unknown]>;
+  };
 };
 
 type MessagingProviderMock = {
   getEmergencyDispatchChannels: jest.Mock<EmergencyDeliveryChannel[], []>;
   sendMessage: jest.Mock<Promise<SendMessageResult>, [SendMessageInput]>;
+};
+
+type LocationGeocodingMock = {
+  reverse: jest.Mock<Promise<GeocodingPlace | null>, [number, number]>;
 };
 
 const failedDelivery = (
@@ -144,6 +160,27 @@ const baseSession = (
   createdAt: new Date('2026-05-24T00:00:00.000Z'),
   updatedAt: new Date('2026-05-24T00:00:00.000Z'),
   user: { profile: baseProfile() },
+  safetyLocation: null,
+  ...overrides,
+});
+
+const baseSafetyLocation = (
+  overrides: Partial<SafetyLocation> = {},
+): SafetyLocation => ({
+  id: 'location-id',
+  userId: 'user-id',
+  name: 'Casa',
+  latitude: -3.7319,
+  longitude: -38.5267,
+  radiusMeters: 150,
+  type: SafetyLocationType.RISK,
+  enabled: true,
+  address: 'Rua das Flores, 123',
+  formattedAddress: 'Rua das Flores, 123, Centro, Fortaleza - CE',
+  placeId: 'place-1',
+  addressSource: 'test',
+  createdAt: new Date('2026-05-24T00:00:00.000Z'),
+  updatedAt: new Date('2026-05-24T00:00:00.000Z'),
   ...overrides,
 });
 
@@ -176,12 +213,13 @@ const baseEvent = (overrides: Partial<AlertEvent> = {}): AlertEvent => ({
 });
 
 const emergencyMessage =
-  'Alerta Vera: Ana pode estar em perigo agora. Local aproximado: -3.732, -38.527. Tente contato imediatamente e acione a policia ou emergencia local se nao conseguir confirmar que ela esta segura.';
+  'Alerta Vera: Ana pode estar em perigo agora. Endereco aproximado indisponivel. Tente contato imediatamente e acione a policia ou emergencia local se nao conseguir confirmar que ela esta segura.';
 
 describe('EmergencyDispatchService', () => {
   let service: EmergencyDispatchService;
   let prisma: PrismaMock;
   let messagingProvider: MessagingProviderMock;
+  let locationGeocoding: LocationGeocodingMock;
 
   beforeEach(() => {
     prisma = {
@@ -205,6 +243,9 @@ describe('EmergencyDispatchService', () => {
         >(),
         create: jest.fn<Promise<AlertEvent>, [AlertEventCreateArgs]>(),
       },
+      veraLocationSample: {
+        findFirst: jest.fn<Promise<VeraLocationSample | null>, [unknown]>(),
+      },
     };
     messagingProvider = {
       getEmergencyDispatchChannels: jest.fn<EmergencyDeliveryChannel[], []>(),
@@ -213,11 +254,17 @@ describe('EmergencyDispatchService', () => {
     prisma.alertEvent.findMany.mockResolvedValue([]);
     prisma.alertEvent.findFirst.mockResolvedValue(null);
     prisma.alertEvent.create.mockResolvedValue(baseEvent());
+    prisma.veraLocationSample.findFirst.mockResolvedValue(null);
     messagingProvider.getEmergencyDispatchChannels.mockReturnValue(['sms']);
     messagingProvider.sendMessage.mockResolvedValue(failedDelivery());
+    locationGeocoding = {
+      reverse: jest.fn<Promise<GeocodingPlace | null>, [number, number]>(),
+    };
+    locationGeocoding.reverse.mockResolvedValue(null);
     service = new EmergencyDispatchService(
       prisma as unknown as PrismaService,
       messagingProvider as unknown as MessagingProviderService,
+      locationGeocoding as unknown as LocationGeocodingService,
     );
   });
 
@@ -238,6 +285,7 @@ describe('EmergencyDispatchService', () => {
             profile: true,
           },
         },
+        safetyLocation: true,
       },
     });
     expect(prisma.emergencyContact.findMany).toHaveBeenCalledWith({
@@ -464,6 +512,14 @@ describe('EmergencyDispatchService', () => {
   it('uses the latest session location event when dispatching contacts', async () => {
     prisma.alertSession.findFirst.mockResolvedValue(baseSession());
     prisma.emergencyContact.findMany.mockResolvedValue([baseContact()]);
+    locationGeocoding.reverse.mockResolvedValue({
+      address: 'Rua A, 10',
+      formattedAddress: 'Rua A, 10, Centro, Fortaleza - CE',
+      latitude: -3.72,
+      longitude: -38.51,
+      placeId: 'reverse-1',
+      source: 'test',
+    });
     prisma.alertEvent.findFirst.mockResolvedValue(
       baseEvent({
         latitude: -3.72,
@@ -477,7 +533,7 @@ describe('EmergencyDispatchService', () => {
     });
 
     expect(messagingProvider.sendMessage).toHaveBeenCalledWith({
-      body: 'Alerta Vera: Ana pode estar em perigo agora. Local aproximado: -3.720, -38.510. Tente contato imediatamente e acione a policia ou emergencia local se nao conseguir confirmar que ela esta segura.',
+      body: 'Alerta Vera: Ana pode estar em perigo agora. Endereco aproximado: Rua A, 10, Centro, Fortaleza - CE. Tente contato imediatamente e acione a policia ou emergencia local se nao conseguir confirmar que ela esta segura.',
       channel: 'sms',
       to: '+5585999999999',
     });
@@ -487,6 +543,25 @@ describe('EmergencyDispatchService', () => {
           dispatchSource: 'ai_escalation',
         }) as Record<string, unknown>,
       }) as Record<string, unknown>,
+    });
+  });
+
+  it('uses the registered safety location address when no live address is available', async () => {
+    prisma.alertSession.findFirst.mockResolvedValue(
+      baseSession({
+        safetyLocation: baseSafetyLocation(),
+        safetyLocationId: 'location-id',
+      }),
+    );
+    prisma.emergencyContact.findMany.mockResolvedValue([baseContact()]);
+    messagingProvider.sendMessage.mockResolvedValue(sentDelivery());
+
+    await service.dispatchCriticalAlert('user-id', 'session-id');
+
+    expect(messagingProvider.sendMessage).toHaveBeenCalledWith({
+      body: 'Alerta Vera: Ana pode estar em perigo agora. Endereco aproximado: Rua das Flores, 123, Centro, Fortaleza - CE. Tente contato imediatamente e acione a policia ou emergencia local se nao conseguir confirmar que ela esta segura.',
+      channel: 'sms',
+      to: '+5585999999999',
     });
   });
 

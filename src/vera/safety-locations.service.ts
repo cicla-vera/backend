@@ -19,6 +19,10 @@ export class SafetyLocationsService {
         longitude: dto.longitude,
         radiusMeters: FIXED_SAFETY_LOCATION_RADIUS_METERS,
         type: dto.type ?? SafetyLocationType.RISK,
+        address: dto.address,
+        formattedAddress: dto.formattedAddress,
+        placeId: dto.placeId,
+        addressSource: dto.addressSource,
       },
     });
   }
@@ -60,6 +64,10 @@ export class SafetyLocationsService {
             : FIXED_SAFETY_LOCATION_RADIUS_METERS,
         type: dto.type,
         enabled: dto.enabled,
+        address: dto.address,
+        formattedAddress: dto.formattedAddress,
+        placeId: dto.placeId,
+        addressSource: dto.addressSource,
       },
     });
   }
