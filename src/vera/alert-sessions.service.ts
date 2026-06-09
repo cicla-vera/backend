@@ -25,9 +25,29 @@ type AlertSessionResponse = AlertSessionWithEvents & {
   alreadyActive: boolean;
 };
 
+const DEFAULT_RECENT_SESSIONS_LIMIT = 12;
+const MAX_RECENT_SESSIONS_LIMIT = 50;
+
 @Injectable()
 export class AlertSessionsService {
   constructor(private prisma: PrismaService) {}
+
+  async findRecent(
+    userId: string,
+    limit?: string,
+  ): Promise<AlertSessionResponse[]> {
+    const take = this.parseRecentLimit(limit);
+    const sessions = await this.prisma.alertSession.findMany({
+      where: { userId },
+      include: this.withOrderedEvents(),
+      orderBy: { startedAt: 'desc' },
+      take,
+    });
+
+    return sessions.map((session) =>
+      this.toResponse(session, session.status === AlertStatus.ACTIVE),
+    );
+  }
 
   async startManual(
     userId: string,
@@ -226,6 +246,20 @@ export class AlertSessionsService {
         'Latitude and longitude must be sent together.',
       );
     }
+  }
+
+  private parseRecentLimit(limit?: string): number {
+    if (!limit) {
+      return DEFAULT_RECENT_SESSIONS_LIMIT;
+    }
+
+    const parsed = Number.parseInt(limit, 10);
+
+    if (!Number.isFinite(parsed)) {
+      return DEFAULT_RECENT_SESSIONS_LIMIT;
+    }
+
+    return Math.min(Math.max(parsed, 1), MAX_RECENT_SESSIONS_LIMIT);
   }
 
   private withOrderedEvents() {

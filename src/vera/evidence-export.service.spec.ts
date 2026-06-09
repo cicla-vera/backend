@@ -329,7 +329,7 @@ describe('EvidenceExportService', () => {
       manifest.integrity.manifestHash,
     );
     expect(manifest.technicalValidity.limitations.join(' ')).toContain(
-      'timestamp receipt uses backend system time',
+      'authenticated',
     );
   });
 

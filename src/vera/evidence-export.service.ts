@@ -296,6 +296,7 @@ export class EvidenceExportService {
           'The manifest hash binds the technical manifest fields before timestamp receipt attachment.',
         ],
         limitations: [
+          'The evidence export endpoint is authenticated and exposes a technical manifest, not raw private evidence files.',
           'The current timestamp receipt uses backend system time unless an external trusted timestamp provider is implemented.',
           'Legal admissibility still depends on consent, procedural handling, expert review, and court acceptance.',
         ],

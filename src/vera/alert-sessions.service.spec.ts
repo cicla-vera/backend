@@ -56,6 +56,15 @@ type AlertSessionFindFirstArgs = {
   orderBy?: { startedAt: 'desc' };
 };
 
+type AlertSessionFindManyArgs = {
+  where: {
+    userId: string;
+  };
+  include: OrderedEventsInclude;
+  orderBy: { startedAt: 'desc' };
+  take: number;
+};
+
 type AlertSessionUpdateArgs = {
   where: { id: string };
   data: {
@@ -78,6 +87,10 @@ type AlertSessionDelegateMock = {
   findFirst: jest.Mock<
     Promise<AlertSessionWithEvents | null>,
     [AlertSessionFindFirstArgs]
+  >;
+  findMany: jest.Mock<
+    Promise<AlertSessionWithEvents[]>,
+    [AlertSessionFindManyArgs]
   >;
   update: jest.Mock<Promise<AlertSessionWithEvents>, [AlertSessionUpdateArgs]>;
 };
@@ -165,6 +178,10 @@ describe('AlertSessionsService', () => {
         Promise<AlertSessionWithEvents | null>,
         [AlertSessionFindFirstArgs]
       >(),
+      findMany: jest.fn<
+        Promise<AlertSessionWithEvents[]>,
+        [AlertSessionFindManyArgs]
+      >(),
       update: jest.fn<
         Promise<AlertSessionWithEvents>,
         [AlertSessionUpdateArgs]
@@ -187,6 +204,37 @@ describe('AlertSessionsService', () => {
 
     const prisma = { alertSession, safetyLocation } as unknown as PrismaService;
     service = new AlertSessionsService(prisma);
+  });
+
+  it('lists recent user alert sessions with an active marker', async () => {
+    alertSession.findMany.mockResolvedValue([
+      baseSession({ id: 'active-session', status: AlertStatus.ACTIVE }),
+      baseSession({ id: 'resolved-session', status: AlertStatus.RESOLVED }),
+    ]);
+
+    const result = await service.findRecent('user-id', '24');
+
+    expect(alertSession.findMany).toHaveBeenCalledWith({
+      where: { userId: 'user-id' },
+      include: {
+        events: {
+          orderBy: { createdAt: 'asc' },
+        },
+      },
+      orderBy: { startedAt: 'desc' },
+      take: 24,
+    });
+    expect(result).toHaveLength(2);
+    expect(result[0]?.alreadyActive).toBe(true);
+    expect(result[1]?.alreadyActive).toBe(false);
+  });
+
+  it('clamps the recent alert sessions limit', async () => {
+    alertSession.findMany.mockResolvedValue([]);
+
+    await service.findRecent('user-id', '1000');
+
+    expect(alertSession.findMany.mock.calls[0]?.[0].take).toBe(50);
   });
 
   it('starts a manual alert session at the normal level', async () => {

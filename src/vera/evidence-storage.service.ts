@@ -1,12 +1,24 @@
 import { Injectable, InternalServerErrorException } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
-import { basename } from 'node:path';
+import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
+import { basename, dirname, resolve } from 'node:path';
 
-type EvidenceStorageConfig = {
+type SupabaseEvidenceStorageConfig = {
+  driver: 'supabase';
   supabaseUrl: string;
   serviceRoleKey: string;
   bucket: string;
 };
+
+type LocalEvidenceStorageConfig = {
+  driver: 'local';
+  bucket: string;
+  rootDir: string;
+};
+
+type EvidenceStorageConfig =
+  | SupabaseEvidenceStorageConfig
+  | LocalEvidenceStorageConfig;
 
 type EvidenceBody = ArrayBuffer | Buffer | Uint8Array;
 
@@ -41,6 +53,11 @@ export class EvidenceStorageService {
   ): Promise<UploadEvidenceResult> {
     const config = this.getConfig();
     const path = this.buildEvidencePath(input);
+
+    if (config.driver === 'local') {
+      return this.uploadLocalEvidence(config, path, input);
+    }
+
     const response = await this.fetchStorage(
       this.getObjectUrl(config, path),
       {
@@ -68,6 +85,11 @@ export class EvidenceStorageService {
 
   async downloadEvidence(path: string): Promise<DownloadEvidenceResult> {
     const config = this.getConfig();
+
+    if (config.driver === 'local') {
+      return this.downloadLocalEvidence(config, path);
+    }
+
     const response = await this.fetchStorage(
       this.getObjectUrl(config, path),
       {
@@ -109,10 +131,22 @@ export class EvidenceStorageService {
   }
 
   private getConfig(): EvidenceStorageConfig {
-    const supabaseUrl = process.env.SUPABASE_URL?.trim().replace(/\/+$/, '');
-    const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY?.trim();
+    const driver = process.env.VERA_EVIDENCE_STORAGE_DRIVER?.trim();
     const bucket =
       process.env.SUPABASE_STORAGE_BUCKET?.trim() || 'vera-evidence';
+
+    if (driver === 'local') {
+      return {
+        driver,
+        bucket,
+        rootDir:
+          process.env.VERA_EVIDENCE_LOCAL_STORAGE_DIR?.trim() ||
+          resolve(process.cwd(), '.vera-evidence-storage'),
+      };
+    }
+
+    const supabaseUrl = process.env.SUPABASE_URL?.trim().replace(/\/+$/, '');
+    const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY?.trim();
 
     if (
       !supabaseUrl ||
@@ -125,11 +159,107 @@ export class EvidenceStorageService {
       );
     }
 
-    return { supabaseUrl, serviceRoleKey, bucket };
+    return { driver: 'supabase', supabaseUrl, serviceRoleKey, bucket };
   }
 
-  private getObjectUrl(config: EvidenceStorageConfig, path: string): string {
+  private getObjectUrl(
+    config: SupabaseEvidenceStorageConfig,
+    path: string,
+  ): string {
     return `${config.supabaseUrl}/storage/v1/object/${config.bucket}/${path}`;
+  }
+
+  private async uploadLocalEvidence(
+    config: LocalEvidenceStorageConfig,
+    path: string,
+    input: UploadEvidenceInput,
+  ): Promise<UploadEvidenceResult> {
+    const localPath = this.getLocalObjectPath(config, path);
+    const body = Buffer.from(this.toFetchBody(input.body));
+
+    await mkdir(dirname(localPath), { recursive: true });
+    await writeFile(localPath, body);
+    await writeFile(
+      this.getLocalMetadataPath(localPath),
+      JSON.stringify(
+        {
+          contentType: input.contentType,
+          size: body.byteLength,
+          uploadedAt: new Date().toISOString(),
+        },
+        null,
+        2,
+      ),
+    );
+
+    return {
+      bucket: config.bucket,
+      path,
+      contentType: input.contentType,
+      size: body.byteLength,
+      uploadedAt: new Date(),
+    };
+  }
+
+  private async downloadLocalEvidence(
+    config: LocalEvidenceStorageConfig,
+    path: string,
+  ): Promise<DownloadEvidenceResult> {
+    const localPath = this.getLocalObjectPath(config, path);
+    const [body, metadata, fileStat] = await Promise.all([
+      readFile(localPath),
+      this.readLocalMetadata(localPath),
+      stat(localPath),
+    ]);
+
+    return {
+      bucket: config.bucket,
+      path,
+      contentType: metadata.contentType ?? null,
+      size: metadata.size ?? fileStat.size,
+      body: this.toFetchBody(body),
+    };
+  }
+
+  private async readLocalMetadata(localPath: string): Promise<{
+    contentType?: string;
+    size?: number;
+  }> {
+    try {
+      const raw = await readFile(this.getLocalMetadataPath(localPath), 'utf8');
+      const parsed = JSON.parse(raw) as {
+        contentType?: unknown;
+        size?: unknown;
+      };
+
+      return {
+        contentType:
+          typeof parsed.contentType === 'string'
+            ? parsed.contentType
+            : undefined,
+        size: typeof parsed.size === 'number' ? parsed.size : undefined,
+      };
+    } catch {
+      return {};
+    }
+  }
+
+  private getLocalObjectPath(
+    config: LocalEvidenceStorageConfig,
+    path: string,
+  ): string {
+    const rootDir = resolve(config.rootDir);
+    const localPath = resolve(rootDir, path);
+
+    if (localPath !== rootDir && !localPath.startsWith(`${rootDir}/`)) {
+      throw new InternalServerErrorException('Invalid evidence storage path.');
+    }
+
+    return localPath;
+  }
+
+  private getLocalMetadataPath(localPath: string): string {
+    return `${localPath}.metadata.json`;
   }
 
   private async fetchStorage(
@@ -147,7 +277,7 @@ export class EvidenceStorageService {
   }
 
   private getAuthHeaders(
-    config: EvidenceStorageConfig,
+    config: SupabaseEvidenceStorageConfig,
   ): Record<string, string> {
     return {
       apikey: config.serviceRoleKey,

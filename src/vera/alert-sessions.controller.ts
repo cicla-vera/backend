@@ -26,6 +26,14 @@ export class AlertSessionsController {
     private readonly emergencyDispatchService: EmergencyDispatchService,
   ) {}
 
+  @Get()
+  findRecent(
+    @CurrentUser() user: { sub: string },
+    @Query('limit') limit?: string,
+  ) {
+    return this.alertSessionsService.findRecent(user.sub, limit);
+  }
+
   @Post('manual')
   startManual(
     @CurrentUser() user: { sub: string },
