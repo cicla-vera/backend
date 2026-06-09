@@ -6,6 +6,10 @@ import {
 import { LocationSampleSource, type VeraLocationSample } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import {
+  LocationGeocodingService,
+  type GeocodingPlace,
+} from './location-geocoding.service';
+import {
   RecordVeraLocationHistoryDto,
   VeraLocationHistorySampleDto,
 } from './dto/record-vera-location-history.dto';
@@ -29,17 +33,39 @@ type NormalizedVeraLocationSample = {
 
 const MAX_LOCATION_SAMPLES_PER_REQUEST = 50;
 const MAX_LOCATION_SAMPLE_FUTURE_MS = 5 * 60 * 1000;
+const REVERSE_GEOCODING_CACHE_TTL_MS = 30 * 60 * 1000;
+const REVERSE_GEOCODING_RETRY_COOLDOWN_MS = 5 * 60 * 1000;
+const REVERSE_GEOCODING_COORDINATE_DECIMALS = 4;
+const MAX_REVERSE_GEOCODING_CACHE_ENTRIES = 200;
+
+type ReverseGeocodingCacheEntry = {
+  expiresAt: number;
+  place: GeocodingPlace | null;
+};
 
 @Injectable()
 export class VeraLocationHistoryService {
-  constructor(private prisma: PrismaService) {}
+  private readonly reverseGeocodingCache = new Map<
+    string,
+    ReverseGeocodingCacheEntry
+  >();
+  private readonly reverseGeocodingInFlight = new Map<
+    string,
+    Promise<GeocodingPlace | null>
+  >();
+
+  constructor(
+    private prisma: PrismaService,
+    private locationGeocoding: LocationGeocodingService,
+  ) {}
 
   async record(userId: string, dto: RecordVeraLocationHistoryDto) {
     const samples = this.normalizeSamples(dto);
     await this.assertOwnedReferences(userId, samples);
+    const enrichedSamples = await this.enrichMissingAddresses(samples);
 
     const created = await this.prisma.$transaction(
-      samples.map((sample) =>
+      enrichedSamples.map((sample) =>
         this.prisma.veraLocationSample.create({
           data: {
             userId,
@@ -214,6 +240,116 @@ export class VeraLocationHistoryService {
     }
 
     return Math.max(1, Math.min(500, parsed));
+  }
+
+  private async enrichMissingAddresses(
+    samples: NormalizedVeraLocationSample[],
+  ): Promise<NormalizedVeraLocationSample[]> {
+    const enrichedSamples: NormalizedVeraLocationSample[] = [];
+
+    for (const sample of samples) {
+      if (sample.address || sample.formattedAddress) {
+        enrichedSamples.push(sample);
+        continue;
+      }
+
+      const place = await this.resolveReverseGeocoding(
+        sample.latitude,
+        sample.longitude,
+      );
+
+      if (!place) {
+        enrichedSamples.push(sample);
+        continue;
+      }
+
+      enrichedSamples.push({
+        ...sample,
+        address: place.address ?? place.formattedAddress,
+        formattedAddress: place.formattedAddress,
+        placeId: sample.placeId ?? place.placeId ?? undefined,
+      });
+    }
+
+    return enrichedSamples;
+  }
+
+  private async resolveReverseGeocoding(
+    latitude: number,
+    longitude: number,
+  ): Promise<GeocodingPlace | null> {
+    const key = this.getReverseGeocodingCacheKey(latitude, longitude);
+    const now = Date.now();
+    const cached = this.reverseGeocodingCache.get(key);
+
+    if (cached && cached.expiresAt > now) {
+      return cached.place;
+    }
+
+    if (cached) {
+      this.reverseGeocodingCache.delete(key);
+    }
+
+    const inFlight = this.reverseGeocodingInFlight.get(key);
+
+    if (inFlight) {
+      return inFlight;
+    }
+
+    const request = this.locationGeocoding
+      .reverse(latitude, longitude)
+      .then((place) => {
+        this.setReverseGeocodingCache(
+          key,
+          place,
+          REVERSE_GEOCODING_CACHE_TTL_MS,
+        );
+        return place;
+      })
+      .catch(() => {
+        this.setReverseGeocodingCache(
+          key,
+          null,
+          REVERSE_GEOCODING_RETRY_COOLDOWN_MS,
+        );
+        return null;
+      })
+      .finally(() => {
+        this.reverseGeocodingInFlight.delete(key);
+      });
+
+    this.reverseGeocodingInFlight.set(key, request);
+    return request;
+  }
+
+  private getReverseGeocodingCacheKey(latitude: number, longitude: number) {
+    return [
+      latitude.toFixed(REVERSE_GEOCODING_COORDINATE_DECIMALS),
+      longitude.toFixed(REVERSE_GEOCODING_COORDINATE_DECIMALS),
+    ].join(',');
+  }
+
+  private setReverseGeocodingCache(
+    key: string,
+    place: GeocodingPlace | null,
+    ttlMs: number,
+  ) {
+    this.reverseGeocodingCache.set(key, {
+      expiresAt: Date.now() + ttlMs,
+      place,
+    });
+
+    while (
+      this.reverseGeocodingCache.size > MAX_REVERSE_GEOCODING_CACHE_ENTRIES
+    ) {
+      const firstKey = this.reverseGeocodingCache.keys().next().value;
+
+      if (!firstKey) {
+        break;
+      }
+
+      this.reverseGeocodingCache.delete(firstKey);
+    }
   }
 
   private toResponse(sample: VeraLocationSample) {

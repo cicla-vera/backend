@@ -5,16 +5,29 @@ import {
 } from '@nestjs/common';
 import { createHash, randomUUID } from 'node:crypto';
 import {
+  AlertEventType,
+  AlertLevel,
+  AlertStatus,
+  AlertTrigger,
+} from '@prisma/client';
+import {
   AiServiceClient,
   type AnalyzeEvidenceCaptureContext,
   type AnalyzeEvidenceResponse,
 } from '../ai/ai-service.client';
 import { PrismaService } from '../prisma/prisma.service';
 import { ScreenAudioChunkDto } from './dto/screen-audio-chunk.dto';
+import { EmergencyDispatchService } from './emergency-dispatch.service';
 import { type UploadedEvidenceFile } from './evidence.service';
+
+type AudioScreeningDispatchResponse = Awaited<
+  ReturnType<EmergencyDispatchService['dispatchCriticalAlert']>
+>;
 
 type AudioScreeningResponse = {
   analysis: AnalyzeEvidenceResponse;
+  alertSessionId: string | null;
+  emergencyDispatch: AudioScreeningDispatchResponse | null;
   persistReasons: string[];
   shouldPersistEvidence: boolean;
 };
@@ -26,6 +39,7 @@ export class AudioScreeningService {
   constructor(
     private prisma: PrismaService,
     private aiServiceClient: AiServiceClient,
+    private emergencyDispatchService: EmergencyDispatchService,
   ) {}
 
   async screen(
@@ -58,11 +72,195 @@ export class AudioScreeningService {
       captureContext: this.buildCaptureContext(metadata),
     });
     const persistReasons = this.getPersistReasons(analysis);
+    const criticalDispatch = await this.dispatchCriticalScreeningIfNeeded(
+      userId,
+      dto,
+      metadata,
+      analysis,
+    );
 
     return {
       analysis,
+      alertSessionId:
+        criticalDispatch?.alertSessionId ?? dto.alertSessionId ?? null,
+      emergencyDispatch: criticalDispatch?.emergencyDispatch ?? null,
       persistReasons,
       shouldPersistEvidence: persistReasons.length > 0,
+    };
+  }
+
+  private async dispatchCriticalScreeningIfNeeded(
+    userId: string,
+    dto: ScreenAudioChunkDto,
+    metadata: Record<string, unknown>,
+    analysis: AnalyzeEvidenceResponse,
+  ): Promise<{
+    alertSessionId: string;
+    emergencyDispatch: AudioScreeningDispatchResponse;
+  } | null> {
+    if (!this.shouldDispatchCriticalScreening(analysis)) {
+      return null;
+    }
+
+    const alertSessionId = await this.persistCriticalScreeningSession(
+      userId,
+      dto,
+      metadata,
+      analysis,
+    );
+    const emergencyDispatch =
+      await this.emergencyDispatchService.dispatchCriticalAlert(
+        userId,
+        alertSessionId,
+        { source: 'ai_escalation' },
+      );
+
+    return { alertSessionId, emergencyDispatch };
+  }
+
+  private async persistCriticalScreeningSession(
+    userId: string,
+    dto: ScreenAudioChunkDto,
+    metadata: Record<string, unknown>,
+    analysis: AnalyzeEvidenceResponse,
+  ): Promise<string> {
+    const now = new Date();
+    const location = this.getValidCoordinatePair(metadata);
+    const screeningMetadata = this.buildCriticalScreeningMetadata(analysis);
+
+    return this.prisma.$transaction(async (tx) => {
+      const existingSession = dto.alertSessionId
+        ? await tx.alertSession.findFirst({
+            where: { id: dto.alertSessionId, userId },
+          })
+        : await tx.alertSession.findFirst({
+            where: { userId, status: AlertStatus.ACTIVE },
+            orderBy: { startedAt: 'desc' },
+          });
+
+      if (existingSession) {
+        const wasCritical = existingSession.level === AlertLevel.CRITICAL;
+
+        if (!wasCritical) {
+          await tx.alertSession.update({
+            where: { id: existingSession.id },
+            data: {
+              level: AlertLevel.CRITICAL,
+              criticalEscalatedAt: existingSession.criticalEscalatedAt ?? now,
+            },
+          });
+        }
+
+        await tx.alertEvent.create({
+          data: {
+            userId,
+            alertSessionId: existingSession.id,
+            type: AlertEventType.AI_ANALYSIS_COMPLETED,
+            message: 'Audio screening AI analysis completed.',
+            metadata: screeningMetadata,
+            latitude: location?.latitude,
+            longitude: location?.longitude,
+          },
+        });
+
+        if (!wasCritical) {
+          await tx.alertEvent.create({
+            data: {
+              userId,
+              alertSessionId: existingSession.id,
+              type: AlertEventType.ALERT_ESCALATED,
+              message: 'Audio screening escalated the alert to critical.',
+              metadata: {
+                ...screeningMetadata,
+                escalationSource: 'audio_screening',
+              },
+              latitude: location?.latitude,
+              longitude: location?.longitude,
+            },
+          });
+        }
+
+        return existingSession.id;
+      }
+
+      const created = await tx.alertSession.create({
+        data: {
+          userId,
+          trigger: AlertTrigger.MANUAL,
+          level: AlertLevel.CRITICAL,
+          criticalEscalatedAt: now,
+          initialLatitude: location?.latitude,
+          initialLongitude: location?.longitude,
+          events: {
+            create: [
+              {
+                userId,
+                type: AlertEventType.SESSION_STARTED,
+                message:
+                  'Audio screening created a critical Vera alert session.',
+                metadata: { source: 'audio_screening' },
+                latitude: location?.latitude,
+                longitude: location?.longitude,
+              },
+              {
+                userId,
+                type: AlertEventType.AI_ANALYSIS_COMPLETED,
+                message: 'Audio screening AI analysis completed.',
+                metadata: screeningMetadata,
+                latitude: location?.latitude,
+                longitude: location?.longitude,
+              },
+              {
+                userId,
+                type: AlertEventType.ALERT_ESCALATED,
+                message: 'Audio screening escalated the alert to critical.',
+                metadata: {
+                  ...screeningMetadata,
+                  escalationSource: 'audio_screening',
+                },
+                latitude: location?.latitude,
+                longitude: location?.longitude,
+              },
+            ],
+          },
+        },
+        select: { id: true },
+      });
+
+      return created.id;
+    });
+  }
+
+  private shouldDispatchCriticalScreening(
+    analysis: AnalyzeEvidenceResponse,
+  ): boolean {
+    if (analysis.status === 'FAILED') {
+      return false;
+    }
+
+    return (
+      analysis.riskLevel === 'CRITICAL' ||
+      analysis.shouldEscalate ||
+      this.normalizeAction(analysis.recommendedAction) === 'escalate_contacts'
+    );
+  }
+
+  private buildCriticalScreeningMetadata(
+    analysis: AnalyzeEvidenceResponse,
+  ): Record<string, string | number | boolean | null> {
+    return {
+      source: 'audio_screening',
+      analysisId: analysis.analysisId,
+      analysisVersion: analysis.analysisVersion,
+      status: analysis.status,
+      riskLevel: analysis.riskLevel,
+      confidence: analysis.confidence,
+      shouldEscalate: analysis.shouldEscalate,
+      recommendedAction: analysis.recommendedAction,
+      summary: analysis.summary,
+      failureReason: analysis.failureReason,
+      transcriptionText: this.getTranscriptionText(analysis.transcription),
+      detectedSignals: analysis.detectedSignals.join(','),
     };
   }
 
@@ -157,19 +355,38 @@ export class AudioScreeningService {
   private getLocation(
     metadata: Record<string, unknown>,
   ): AnalyzeEvidenceCaptureContext['location'] | undefined {
-    const latitude = this.getNumber(metadata, 'latitude');
-    const longitude = this.getNumber(metadata, 'longitude');
+    const location = this.getValidCoordinatePair(metadata);
 
-    if (latitude === undefined || longitude === undefined) {
+    if (!location) {
       return undefined;
     }
 
     return {
-      latitude,
-      longitude,
+      latitude: location.latitude,
+      longitude: location.longitude,
       accuracyMeters: this.getNumber(metadata, 'accuracyMeters'),
       capturedAt: this.getString(metadata, 'capturedAt'),
     };
+  }
+
+  private getValidCoordinatePair(
+    metadata: Record<string, unknown>,
+  ): { latitude: number; longitude: number } | null {
+    const latitude = this.getNumber(metadata, 'latitude');
+    const longitude = this.getNumber(metadata, 'longitude');
+
+    if (
+      latitude === undefined ||
+      longitude === undefined ||
+      latitude < -90 ||
+      latitude > 90 ||
+      longitude < -180 ||
+      longitude > 180
+    ) {
+      return null;
+    }
+
+    return { latitude, longitude };
   }
 
   private getString(metadata: Record<string, unknown>, key: string) {
@@ -190,5 +407,44 @@ export class AudioScreeningService {
     const value = metadata[key];
 
     return typeof value === 'boolean' ? value : undefined;
+  }
+
+  private normalizeAction(value: string | null | undefined) {
+    return value?.trim().toLowerCase() ?? '';
+  }
+
+  private getTranscriptionText(
+    transcription: Record<string, unknown> | null,
+  ): string | null {
+    if (!transcription) {
+      return null;
+    }
+
+    const directText = transcription.text;
+
+    if (typeof directText === 'string' && directText.trim()) {
+      return directText.trim();
+    }
+
+    const segments = transcription.segments;
+
+    if (!Array.isArray(segments)) {
+      return null;
+    }
+
+    const text = segments
+      .map((segment) => {
+        if (!segment || typeof segment !== 'object') {
+          return null;
+        }
+
+        const segmentText = (segment as Record<string, unknown>).text;
+        return typeof segmentText === 'string' ? segmentText.trim() : null;
+      })
+      .filter(Boolean)
+      .join(' ')
+      .trim();
+
+    return text || null;
   }
 }
