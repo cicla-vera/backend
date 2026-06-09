@@ -115,7 +115,7 @@ describe('SafetyLocationsService', () => {
       name: 'Home',
       latitude: -3.7319,
       longitude: -38.5267,
-      radiusMeters: 120,
+      radiusMeters: 9999,
     });
 
     expect(safetyLocation.create).toHaveBeenCalledWith({
@@ -124,7 +124,7 @@ describe('SafetyLocationsService', () => {
         name: 'Home',
         latitude: -3.7319,
         longitude: -38.5267,
-        radiusMeters: 120,
+        radiusMeters: 150,
         type: SafetyLocationType.RISK,
       },
     });

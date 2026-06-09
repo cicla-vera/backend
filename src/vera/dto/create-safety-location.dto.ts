@@ -27,10 +27,11 @@ export class CreateSafetyLocationDto {
   @Max(180)
   longitude!: number;
 
+  @IsOptional()
   @IsInt()
   @Min(25)
   @Max(10000)
-  radiusMeters!: number;
+  radiusMeters?: number;
 
   @IsOptional()
   @IsEnum(SafetyLocationType)
