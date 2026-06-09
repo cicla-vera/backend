@@ -11,8 +11,10 @@ import {
   type AlertEvent,
   type EmergencyContact,
   type Profile,
+  type SafetyLocation,
 } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { LocationGeocodingService } from './location-geocoding.service';
 import {
   type EmergencyDeliveryChannel,
   MessagingProviderService,
@@ -23,6 +25,7 @@ type AlertSessionWithProfile = AlertSession & {
   user: {
     profile: Profile | null;
   };
+  safetyLocation: SafetyLocation | null;
 };
 
 type DispatchStatus = 'sent' | 'failed';
@@ -46,8 +49,10 @@ type DispatchCriticalAlertOptions = {
 };
 
 type DispatchLocation = {
-  latitude: number;
-  longitude: number;
+  address: string | null;
+  formattedAddress: string | null;
+  latitude?: number;
+  longitude?: number;
 };
 
 type DispatchResponse = {
@@ -63,6 +68,7 @@ export class EmergencyDispatchService {
   constructor(
     private prisma: PrismaService,
     private messagingProvider: MessagingProviderService,
+    private locationGeocoding: LocationGeocodingService,
   ) {}
 
   async dispatchCriticalAlert(
@@ -178,8 +184,36 @@ export class EmergencyDispatchService {
   private async findBestDispatchLocation(
     userId: string,
     alertSessionId: string,
-    session: AlertSession,
+    session: AlertSessionWithProfile,
   ): Promise<DispatchLocation | null> {
+    const latestHistorySample = await this.prisma.veraLocationSample.findFirst({
+      where: { userId, alertSessionId },
+      orderBy: { capturedAt: 'desc' },
+    });
+
+    if (latestHistorySample) {
+      const address =
+        latestHistorySample.formattedAddress ?? latestHistorySample.address;
+
+      if (address) {
+        return {
+          address: latestHistorySample.address,
+          formattedAddress: latestHistorySample.formattedAddress ?? address,
+          latitude: latestHistorySample.latitude,
+          longitude: latestHistorySample.longitude,
+        };
+      }
+
+      const reversed = await this.reverseLocationSafely(
+        latestHistorySample.latitude,
+        latestHistorySample.longitude,
+      );
+
+      if (reversed) {
+        return reversed;
+      }
+    }
+
     const latestLocationEvent = await this.prisma.alertEvent.findFirst({
       where: {
         userId,
@@ -196,9 +230,33 @@ export class EmergencyDispatchService {
       latestLocationEvent.longitude !== null &&
       latestLocationEvent.longitude !== undefined
     ) {
+      const reversed = await this.reverseLocationSafely(
+        latestLocationEvent.latitude,
+        latestLocationEvent.longitude,
+      );
+
+      if (reversed) {
+        return reversed;
+      }
+
       return {
+        address: null,
+        formattedAddress: null,
         latitude: latestLocationEvent.latitude,
         longitude: latestLocationEvent.longitude,
+      };
+    }
+
+    const safetyLocationAddress =
+      session.safetyLocation?.formattedAddress ??
+      session.safetyLocation?.address;
+
+    if (safetyLocationAddress) {
+      return {
+        address: session.safetyLocation?.address ?? safetyLocationAddress,
+        formattedAddress: safetyLocationAddress,
+        latitude: session.safetyLocation?.latitude,
+        longitude: session.safetyLocation?.longitude,
       };
     }
 
@@ -206,7 +264,18 @@ export class EmergencyDispatchService {
       return null;
     }
 
+    const reversed = await this.reverseLocationSafely(
+      session.initialLatitude,
+      session.initialLongitude,
+    );
+
+    if (reversed) {
+      return reversed;
+    }
+
     return {
+      address: null,
+      formattedAddress: null,
       latitude: session.initialLatitude,
       longitude: session.initialLongitude,
     };
@@ -285,6 +354,7 @@ export class EmergencyDispatchService {
             profile: true,
           },
         },
+        safetyLocation: true,
       },
     });
 
@@ -457,8 +527,8 @@ export class EmergencyDispatchService {
     const name = session.user.profile?.name?.trim() || 'Uma pessoa';
     const formattedLocation = this.formatApproximateLocation(location);
     const locationText = formattedLocation
-      ? ` Local aproximado: ${formattedLocation}.`
-      : ' Localizacao indisponivel.';
+      ? ` Endereco aproximado: ${formattedLocation}.`
+      : ' Endereco aproximado indisponivel.';
 
     return `Alerta Vera: ${name} pode estar em perigo agora.${locationText} Tente contato imediatamente e acione a policia ou emergencia local se nao conseguir confirmar que ela esta segura.`;
   }
@@ -470,7 +540,29 @@ export class EmergencyDispatchService {
       return null;
     }
 
-    return `${location.latitude.toFixed(3)}, ${location.longitude.toFixed(3)}`;
+    return location.formattedAddress ?? location.address;
+  }
+
+  private async reverseLocationSafely(
+    latitude: number,
+    longitude: number,
+  ): Promise<DispatchLocation | null> {
+    try {
+      const place = await this.locationGeocoding.reverse(latitude, longitude);
+
+      if (!place) {
+        return null;
+      }
+
+      return {
+        address: place.address,
+        formattedAddress: place.formattedAddress,
+        latitude,
+        longitude,
+      };
+    } catch {
+      return null;
+    }
   }
 
   private asMetadata(value: unknown): Record<string, unknown> {
