@@ -1,4 +1,7 @@
 import { InternalServerErrorException } from '@nestjs/common';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { EvidenceStorageService } from './evidence-storage.service';
 
 describe('EvidenceStorageService', () => {
@@ -6,6 +9,7 @@ describe('EvidenceStorageService', () => {
   const originalFetch = global.fetch;
   let service: EvidenceStorageService;
   let fetchMock: jest.MockedFunction<typeof fetch>;
+  let localStorageDir: string | null;
 
   beforeEach(() => {
     process.env = {
@@ -14,12 +18,19 @@ describe('EvidenceStorageService', () => {
       SUPABASE_SERVICE_ROLE_KEY: 'service-role-key',
       SUPABASE_STORAGE_BUCKET: 'vera-evidence',
     };
+    delete process.env.VERA_EVIDENCE_STORAGE_DRIVER;
+    delete process.env.VERA_EVIDENCE_LOCAL_STORAGE_DIR;
     fetchMock = jest.fn<typeof fetch>();
     global.fetch = fetchMock;
     service = new EvidenceStorageService();
+    localStorageDir = null;
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    if (localStorageDir) {
+      await rm(localStorageDir, { force: true, recursive: true });
+    }
+
     process.env = originalEnv;
     global.fetch = originalFetch;
   });
@@ -96,6 +107,28 @@ describe('EvidenceStorageService', () => {
     expect(result.contentType).toBe('audio/wav');
     expect(result.size).toBe(Buffer.byteLength('audio-bytes'));
     expect(result.body.byteLength).toBe(Buffer.byteLength('audio-bytes'));
+  });
+
+  it('stores and downloads evidence from the local driver for dev smoke tests', async () => {
+    localStorageDir = await mkdtemp(join(tmpdir(), 'vera-evidence-'));
+    process.env.VERA_EVIDENCE_STORAGE_DRIVER = 'local';
+    process.env.VERA_EVIDENCE_LOCAL_STORAGE_DIR = localStorageDir;
+
+    const uploaded = await service.uploadEvidence({
+      userId: 'user-id',
+      alertSessionId: 'session-id',
+      fileName: 'audio.wav',
+      contentType: 'audio/wav',
+      body: Buffer.from('audio-bytes'),
+    });
+
+    const stored = await readFile(join(localStorageDir, uploaded.path));
+    const downloaded = await service.downloadEvidence(uploaded.path);
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(stored.toString('utf8')).toBe('audio-bytes');
+    expect(downloaded.contentType).toBe('audio/wav');
+    expect(Buffer.from(downloaded.body).toString('utf8')).toBe('audio-bytes');
   });
 
   it('fails without storage credentials', async () => {

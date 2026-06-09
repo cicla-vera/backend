@@ -329,7 +329,7 @@ describe('EvidenceExportService', () => {
       manifest.integrity.manifestHash,
     );
     expect(manifest.technicalValidity.limitations.join(' ')).toContain(
-      'public evidence export endpoint',
+      'authenticated',
     );
   });
 
